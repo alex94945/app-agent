@@ -28,39 +28,39 @@
         -   [x] `.env.example`, `requirements.txt`, `.gitignore`, `README.md`
     -   [x] Details: Initialize Python virtual environment. Populate `.gitignore`. Create `.env.example` with `REPO_DIR`, `EMBED_PROVIDER`, `OPENAI_API_KEY`, etc.
 
--   [ ] **2. Configuration & Environment:**
-    -   [ ] Action: Implement basic configuration loading.
-    -   [ ] File: `common/config.py` (or similar)
-    -   [ ] Details:
-        -   [ ] Load environment variables from `.env` file (using `python-dotenv`).
-        -   [ ] Define `REPO_DIR`: This will be the primary workspace root. For local dev, it can be a subdirectory in the project (e.g., `./workspace_dev`). MCP, LSP, Git tools will operate relative to this.
-        -   [ ] Define `EMBED_PROVIDER` (default to "openai").
-        -   [ ] Implement a simple factory function `get_embedding_model()` in `common/embeddings.py` that returns an embedding client (e.g., `OpenAIEmbeddings`) based on `EMBED_PROVIDER`.
-    -   [ ] Testing: Basic check that environment variables are loaded.
+-   [x] **2. Configuration & Environment:**
+    -   [x] Action: Implement basic configuration loading.
+    -   [x] File: `common/config.py` (or similar)
+    -   [x] Details:
+        -   [x] Load environment variables from `.env` file (using `python-dotenv`).
+        -   [x] Define `REPO_DIR`: This will be the primary workspace root. For local dev, it can be a subdirectory in the project (e.g., `./workspace_dev`). MCP, LSP, Git tools will operate relative to this.
+        -   [x] Define `EMBED_PROVIDER` (default to "openai").
+        -   [x] Implement a simple factory function `get_embedding_model()` in `common/embeddings.py` that returns an embedding client (e.g., `OpenAIEmbeddings`) based on `EMBED_PROVIDER`.
+    -   [x] Testing: Basic check that environment variables are loaded.
 
--   [ ] **3. FastAPI Gateway - Basic Setup:**
-    -   [ ] Action: Implement the initial FastAPI application.
-    -   [ ] File: `gateway/main.py`
-    -   [ ] Details:
-        -   [ ] Add `fastapi`, `uvicorn`, `websockets`, `python-dotenv` to `requirements.txt`.
-        -   [ ] Create a basic FastAPI app instance.
-        -   [ ] Implement a health check endpoint (e.g., `/health`).
-    -   [ ] Testing: Run `uvicorn gateway.main:app --reload` and verify `/health`.
+-   [x] **3. FastAPI Gateway - Basic Setup:**
+    -   [x] Action: Implement the initial FastAPI application.
+    -   [x] File: `gateway/main.py`
+    -   [x] Details: 
+        -   [x] Add `fastapi`, `uvicorn`, `websockets`, `python-dotenv` to `requirements.txt`.
+        -   [x] Create a basic FastAPI app instance.
+        -   [x] Implement a health check endpoint (e.g., `/health`).
+    -   [x] Testing: Run `uvicorn gateway.main:app --reload` and verify `/health`.
 
--   [ ] **4. FastAPI Gateway - WebSocket Echo Endpoint (with New Schema):**
-    -   [ ] Action: Implement the `/api/agent` WebSocket endpoint.
-    -   [ ] File: `gateway/main.py` (or `gateway/agent_router.py`), `common/ws_messages.py` (for schema definitions).
-    -   [ ] Details:
-        -   [ ] Define Pydantic models or TypedDicts in `common/ws_messages.py` for the 1-byte prefix WebSocket message schema:
-            -   [ ] `TokenMessage(t: Literal["tok"], d: str)`
-            -   [ ] `ToolCallMessage(t: Literal["tool_call"], d: Dict[str, Any])`
-            -   [ ] `ToolResultMessage(t: Literal["tool_result"], d: Dict[str, Any])`
-            -   [ ] `FinalMessage(t: Literal["final"], d: str)`
-            -   [ ] `ErrorMessage(t: Literal["error"], d: str)`
-        -   [ ] The WebSocket endpoint should accept incoming messages (likely a simple JSON string from UI initially, e.g., `{"prompt": "user input"}`).
-        -   [ ] For now, it echoes back a `FinalMessage` with the received prompt.
-        -   [ ] Log received and sent messages, including their type prefix.
-    -   [ ] Testing: Use a WebSocket client. Send a JSON prompt. Verify a `FinalMessage` (e.g., `{"t": "final", "d": "Echo: user input"}`) is received.
+-   [x] **4. FastAPI Gateway - WebSocket Echo Endpoint (with New Schema):**
+    -   [x] Action: Implement the `/api/agent` WebSocket endpoint.
+    -   [x] File: `gateway/main.py` (or `gateway/agent_router.py`), `common/ws_messages.py` (for schema definitions).
+    -   [x] Details:
+        -   [x] Define Pydantic models or TypedDicts in `common/ws_messages.py` for the 1-byte prefix WebSocket message schema:
+            -   [x] `TokenMessage(t: Literal["tok"], d: str)`
+            -   [x] `ToolCallMessage(t: Literal["tool_call"], d: Dict[str, Any])`
+            -   [x] `ToolResultMessage(t: Literal["tool_result"], d: Dict[str, Any])`
+            -   [x] `FinalMessage(t: Literal["final"], d: str)`
+            -   [x] `ErrorMessage(t: Literal["error"], d: str)`
+        -   [x] The WebSocket endpoint should accept incoming messages (likely a simple JSON string from UI initially, e.g., `{"prompt": "user input"}`).
+        -   [x] For now, it echoes back a `FinalMessage` with the received prompt.
+        -   [x] Log received and sent messages, including their type prefix.
+    -   [x] Testing: Use a WebSocket client. Send a JSON prompt. Verify a `FinalMessage` (e.g., `{"t": "final", "d": "Echo: user input"}`) is received.
 
 ---
 
