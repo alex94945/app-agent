@@ -12,6 +12,7 @@ langgraph~=0.4            # Using a recent, stable version line
 langchain-core~=0.3
 langchain-openai~=0.3
 langchain-community~=0.3
+langchain-chroma~=0.1     # As suggested by deprecation warning
 
 ######## Toolbelt ########
 mcp~=1.9

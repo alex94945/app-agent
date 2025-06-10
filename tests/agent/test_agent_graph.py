@@ -3,9 +3,9 @@ from unittest.mock import patch, MagicMock
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 
-# We only need build_graph for this test, not the pre-built agent_graph instance
 from agent.agent_graph import build_graph
 from agent.state import AgentState
+from common.config import settings
 
 @patch('agent.agent_graph.planner_llm_step')
 def test_run_agent_simple_flow(mock_planner_llm_step):
@@ -40,7 +40,7 @@ def test_run_agent_simple_flow(mock_planner_llm_step):
     assert final_messages[-1].content == mock_response_content
 
 @patch('agent.agent_graph.planner_llm_step')
-@patch('agent.agent_graph.tool_executor_step') # Also mock the tool executor
+@patch('agent.agent_graph.tool_executor_step')
 def test_agent_scaffolds_with_run_shell(mock_tool_executor, mock_planner_llm_step):
     """
     Tests that for an initial prompt, the agent's first step is to
@@ -52,7 +52,8 @@ def test_agent_scaffolds_with_run_shell(mock_tool_executor, mock_planner_llm_ste
         "args": {
             "command": 'npx create-next-app@latest my-app --typescript --tailwind --app --eslint --src-dir --import-alias \"@/*\"'
         },
-        "id": "tool_call_123"
+        "id": "tool_call_123",
+        "type": "tool_call"
     }
     mock_planner_output = {"messages": [AIMessage(content="", tool_calls=[expected_tool_call])]}
     mock_planner_llm_step.return_value = mock_planner_output

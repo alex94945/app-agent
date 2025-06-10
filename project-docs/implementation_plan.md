@@ -91,33 +91,33 @@
         -   [x] Gateway sends this back as a `FinalMessage`.
     -   [x] Testing: WebSocket client sends prompt, verifies a `FinalMessage` from the agent's planner is received.
 
--   [ ] **3. Tool Definition & Initial Implementations (`tools/` directory):**
-    -   [ ] General: Add `langchain-community`, `openai`, `chromadb`, `unidiff`, `GitPython`, `modelcontextprotocol`, `python-multipart` to `requirements.txt`.
-    -   [ ] Workspace Setup: All tools operate assuming files are within `os.environ['REPO_DIR']`.
-    -   [ ] **File: `tools/file_io_mcp_tools.py`**
-        -   [ ] Tools: `read_file(path_in_repo: str) -> str`, `write_file(path_in_repo: str, content: str) -> str`
-        -   [ ] Implementation: **Implement for real.** Wrappers around MCP client calls. Paths are relative to `REPO_DIR`.
-    -   [ ] **File: `tools/shell_mcp_tools.py`**
-        -   [ ] Tool: `run_shell(command: str, working_directory_relative_to_repo: Optional[str] = None) -> Dict[str, Any]`
-        -   [ ] Implementation: **Implement for real.** Calls MCP `execute_command`.
-    -   [ ] **File: `tools/patch_tools.py`**
-        -   [ ] Tool: `apply_patch(file_path_in_repo: str, diff_content: str) -> Dict[str, Any]`
-        -   [ ] Implementation: **Implement for real.** Uses `run_shell` tool for `git apply`.
-        -   [ ] TODO: Add note for future diff-normalization.
-    -   [ ] **File: `tools/vector_store_tools.py`**
-        -   [ ] Adapter Class: `VectorStoreAdapter` (internal to module or common).
-        -   [ ] Tool: `vector_search(query: str, k: int = 3) -> List[Dict[str, Any]]`
-        -   [ ] Implementation: **Implement basic adapter and tool.**
-            -   [ ] Adapter uses `get_embedding_model()`.
-            -   [ ] In-memory Chroma store.
-            -   [ ] Implement simple disk cache for embeddings.
-    -   [ ] **File: `tools/lsp_tools.py`**
-        -   [ ] Tools: `lsp_definition(file_path_in_repo: str, line: int, character: int) -> Dict`, `lsp_hover(file_path_in_repo: str, line: int, character: int) -> Dict`
-        -   [ ] Implementation: **Stub first.** Return mock JSON.
-    -   [ ] **File: `tools/diagnostics_tools.py`** (or combine with `lsp_tools.py`)
-        -   [ ] Tool: `get_diagnostics(file_path_in_repo: Optional[str] = None) -> List[Dict]`
-        -   [ ] Implementation: **Stub first.** Return `[]`.
-    -   [ ] Testing: Unit tests for each tool.
+-   [x] **3. Tool Definition & Initial Implementations (`tools/` directory):**
+    -   [x] General: Add `langchain-community`, `openai`, `chromadb`, `unidiff`, `GitPython`, `modelcontextprotocol`, `python-multipart` to `requirements.txt`.
+    -   [x] Workspace Setup: All tools operate assuming files are within `os.environ['REPO_DIR']`.
+    -   [x] **File: `tools/file_io_mcp_tools.py`**
+        -   [x] Tools: `read_file(path_in_repo: str) -> str`, `write_file(path_in_repo: str, content: str) -> str`
+        -   [x] Implementation: **Implement for real.** Wrappers around MCP client calls. Paths are relative to `REPO_DIR`.
+    -   [x] **File: `tools/shell_mcp_tools.py`**
+        -   [x] Tool: `run_shell(command: str, working_directory_relative_to_repo: Optional[str] = None) -> Dict[str, Any]`
+        -   [x] Implementation: **Implement for real.** Calls MCP `execute_command`.
+    -   [x] **File: `tools/patch_tools.py`**
+        -   [x] Tool: `apply_patch(file_path_in_repo: str, diff_content: str) -> Dict[str, Any]`
+        -   [x] Implementation: **Implement for real.** Uses `run_shell` tool for `git apply`.
+        -   [x] TODO: Add note for future diff-normalization.
+    -   [x] **File: `tools/vector_store_tools.py`**
+        -   [x] Adapter Class: `VectorStoreAdapter` (internal to module or common).
+        -   [x] Tool: `vector_search(query: str, k: int = 3) -> List[Dict[str, Any]]`
+        -   [x] Implementation: **Implement basic adapter and tool.**
+            -   [x] Adapter uses `get_embedding_model()`.
+            -   [x] In-memory Chroma store.
+            -   [x] Implement simple disk cache for embeddings.
+    -   [x] **File: `tools/lsp_tools.py`**
+        -   [x] Tools: `lsp_definition(file_path_in_repo: str, line: int, character: int) -> Dict`, `lsp_hover(file_path_in_repo: str, line: int, character: int) -> Dict`
+        -   [x] Implementation: **Stub first.** Return mock JSON.
+    -   [x] **File: `tools/diagnostics_tools.py`** (or combine with `lsp_tools.py`)
+        -   [x] Tool: `get_diagnostics(file_path_in_repo: Optional[str] = None) -> List[Dict]`
+        -   [x] Implementation: **Stub first.** Return `[]`.
+    -   [x] Testing: Unit tests for each tool.
 
 -   [ ] **4. LangGraph Agent - Tool Routing & Execution:**
     -   [ ] Action: Enhance LangGraph agent for tool calling.
@@ -203,7 +203,7 @@
         -   [ ] Run `npm install`, `npm run dev` via WebContainer API.
         -   [ ] Embed preview URL in iframe.
         -   [ ] Pass `REPO_DIR` concept to WebContainer (mount files from agent as if `REPO_DIR` is root).
-    -   [ ] Testing: Minimal Next.js app boots in iframe.
+    -   [ ] Testing: Minimal Next.js app boots in iframe.`
 
 -   [ ] **5. End-to-End Flow for Preview:**
     -   [ ] Action: Connect agent's file operations (MCP tools on `REPO_DIR`) to WebContainer.
