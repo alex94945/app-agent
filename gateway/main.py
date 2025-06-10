@@ -1,10 +1,12 @@
 # gateway/main.py
 
 import logging
+import uuid
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 import json
 from common.config import settings
 from common.ws_messages import FinalMessage, ErrorMessage
+from agent.agent_graph import run_agent
 
 # Configure logging
 # The log level is loaded from the settings instance
@@ -48,21 +50,27 @@ async def agent_websocket(websocket: WebSocket):
     await websocket.accept()
     logger.info("WebSocket connection accepted.")
     try:
+        # For now, we'll use a new "thread" for each connection.
+        # Later, this could be tied to a user session.
+        thread_id = str(uuid.uuid4())
+        logger.info(f"Generated new thread_id for connection: {thread_id}")
+
         while True:
             # Wait for a message from the client
             raw_data = await websocket.receive_text()
             logger.debug(f"Received raw data: {raw_data}")
 
-            # For now, we assume the incoming message is a simple JSON with a "prompt" key
             try:
                 data = json.loads(raw_data)
                 prompt = data.get("prompt", "No prompt provided")
                 logger.info(f"Received prompt: '{prompt}'")
 
-                # --- Phase 0: Echo the prompt back using the FinalMessage schema ---
-                echo_message = FinalMessage(d=f"Echo: {prompt}")
-                await websocket.send_text(echo_message.model_dump_json())
-                logger.info(f"Sent echo response: {echo_message.model_dump_json()}")
+                # --- Phase 1: Call the agent and get the final response ---
+                final_response_content = run_agent(prompt, thread_id)
+
+                response_message = FinalMessage(d=final_response_content)
+                await websocket.send_text(response_message.model_dump_json())
+                logger.info(f"Sent agent's final response for thread '{thread_id}'.")
 
             except json.JSONDecodeError:
                 logger.error(f"Failed to decode incoming JSON: {raw_data}")

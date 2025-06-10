@@ -68,19 +68,19 @@
 
 **(Corresponds to Design Doc MVP Phase 1, with enhancements)**
 
--   [ ] **1. LangGraph Agent - Initial Setup:**
-    -   [ ] Action: Create the basic structure for the LangGraph agent.
-    -   [ ] Directory: `agent/`
-    -   [ ] Files: `agent/agent_graph.py`, `agent/state.py`.
-    -   [ ] Details:
-        -   [ ] Add `langgraph`, `langchain-core`, `langchain-openai` to `requirements.txt`.
-        -   [ ] Define `AgentState` (e.g., input prompt, conversation history list, current tool call request, tool results list).
-        -   [ ] Create a LangGraph `StateGraph` with a "planner_llm_step" node.
-        -   [ ] The "planner_llm_step" node will:
-            -   [ ] Take the input prompt from the state.
-            -   [ ] Make a **simple, real LLM call** (OpenAI). Prompt: "User said: {input}. What is your response or next tool call?".
-            -   [ ] Update state with the LLM's response.
-    -   [ ] Testing: Unit test: invoke graph, check output state.
+-   [x] **1. LangGraph Agent - Initial Setup:**
+    -   [x] Action: Create the basic structure for the LangGraph agent.
+    -   [x] Directory: `agent/`
+    -   [x] Files: `agent/agent_graph.py`, `agent/state.py`.
+    -   [x] Details:
+        -   [x] Add `langgraph`, `langchain-core`, `langchain-openai` to `requirements.txt`.
+        -   [x] Define `AgentState` (e.g., input prompt, conversation history list, current tool call request, tool results list).
+        -   [x] Create a LangGraph `StateGraph` with a "planner_llm_step" node.
+        -   [x] The "planner_llm_step" node will:
+            -   [x] Take the input prompt from the state.
+            -   [x] Make a **simple, real LLM call** (OpenAI). Prompt: "User said: {input}. What is your response or next tool call?".
+            -   [x] Update state with the LLM's response.
+    -   [x] Testing: Unit test: invoke graph, check output state.
 
 -   [ ] **2. Integrate Agent with FastAPI Gateway (Initial - Final Output):**
     -   [ ] Action: Modify FastAPI to pass messages to LangGraph and send back the agent's *final* response using the new WebSocket schema.
