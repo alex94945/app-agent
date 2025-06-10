@@ -76,10 +76,10 @@
         -   [x] Add `langgraph`, `langchain-core`, `langchain-openai` to `requirements.txt`.
         -   [x] Define `AgentState` (e.g., input prompt, conversation history list, current tool call request, tool results list).
         -   [x] Create a LangGraph `StateGraph` with a "planner_llm_step" node.
-        -   [x] The "planner_llm_step" node will:
-            -   [x] Take the input prompt from the state.
-            -   [x] Make a **simple, real LLM call** (OpenAI). Prompt: "User said: {input}. What is your response or next tool call?".
-            -   [x] Update state with the LLM's response.
+        -   [x] **(Revised)** The "planner_llm_step" node will:
+            -   [x] Take the input prompt.
+            -   [x] Make a **simple, real LLM call** (OpenAI). Prompt will guide the LLM to recognize this is a new project and that the first step should be to call a shell command to set it up.
+            -   [x] The LLM's first response should be a tool call to `run_shell` with the `npx create-next-app...` command.
     -   [x] Testing: Unit test: invoke graph, check output state.
 
 -   [x] **2. Integrate Agent with FastAPI Gateway (Initial - Final Output):**
@@ -92,11 +92,11 @@
     -   [x] Testing: WebSocket client sends prompt, verifies a `FinalMessage` from the agent's planner is received.
 
 -   [ ] **3. Tool Definition & Initial Implementations (`tools/` directory):**
-    -   [x] General: Add `langchain-community`, `openai`, `chromadb`, `unidiff`, `GitPython`, `modelcontextprotocol`, `python-multipart` to `requirements.txt`.
-    -   [x] Workspace Setup: All tools operate assuming files are within `os.environ['REPO_DIR']`.
-    -   [x] **File: `tools/file_io_mcp_tools.py`**
-        -   [x] Tools: `read_file(path_in_repo: str) -> str`, `write_file(path_in_repo: str, content: str) -> str`
-        -   [x] Implementation: **Implement for real.** Wrappers around MCP client calls. Paths are relative to `REPO_DIR`.
+    -   [ ] General: Add `langchain-community`, `openai`, `chromadb`, `unidiff`, `GitPython`, `modelcontextprotocol`, `python-multipart` to `requirements.txt`.
+    -   [ ] Workspace Setup: All tools operate assuming files are within `os.environ['REPO_DIR']`.
+    -   [ ] **File: `tools/file_io_mcp_tools.py`**
+        -   [ ] Tools: `read_file(path_in_repo: str) -> str`, `write_file(path_in_repo: str, content: str) -> str`
+        -   [ ] Implementation: **Implement for real.** Wrappers around MCP client calls. Paths are relative to `REPO_DIR`.
     -   [ ] **File: `tools/shell_mcp_tools.py`**
         -   [ ] Tool: `run_shell(command: str, working_directory_relative_to_repo: Optional[str] = None) -> Dict[str, Any]`
         -   [ ] Implementation: **Implement for real.** Calls MCP `execute_command`.
@@ -122,12 +122,16 @@
 -   [ ] **4. LangGraph Agent - Tool Routing & Execution:**
     -   [ ] Action: Enhance LangGraph agent for tool calling.
     -   [ ] File: `agent/agent_graph.py`
-    -   [ ] Details:
+    -   [ ] **(Revised)** Details:
         -   [ ] "planner_llm_step" LLM identifies needed tool.
         -   [ ] Conditional edge to "tool_executor_step".
         -   [ ] "tool_executor_step" parses, dispatches, executes tool, stores output in `AgentState`.
         -   [ ] Edge back to "planner_llm_step" (or "process_tool_result_llm_step").
         -   [ ] If no tool call, graph to `END`.
+        -   [ ] Agent must handle the output of the first `run_shell` call (`create-next-app`).
+        -   [ ] Agent's next planned step should be to discover the new file structure (e.g., by calling `run_shell` with `ls -R`).
+        -   [ ] Agent must then proceed with the modification loop (read/plan-change/patch/validate) to fulfill the user's prompt.
+        -   [ ] Agent's internal context must be updated to treat `REPO_DIR/my-app` as the new root for subsequent file operations.
     -   [ ] Testing: Integration tests for `read_file`, `run_shell`, `vector_search` stub flows.
 
 ---
@@ -156,11 +160,11 @@
 -   [ ] **3. CLI Smoke Test (`scripts/e2e_smoke.py`):**
     -   [ ] Action: Create the E2E smoke test script.
     -   [ ] File: `scripts/e2e_smoke.py`
-    -   [ ] Details:
+    -   [ ] **(Revised)** Details:
         -   [ ] Script initializes agent, sets `REPO_DIR` to a temp dir.
-        -   [ ] Instructs agent: "Initialize a new npm project and install 'lodash'."
-        -   [ ] Agent calls `run_shell("npm init -y")`, then `run_shell("npm install lodash")`.
-        -   [ ] Script asserts `package.json` and `node_modules/lodash` exist in `REPO_DIR`.
+        -   [ ] Instructs agent: "Create a new Next.js application."
+        -   [ ] The test will **verify that the agent's first tool call is `run_shell` with the `npx create-next-app...` command.**
+        -   [ ] The test will then assert that the `REPO_DIR/my-app/package.json` file exists after the agent run is complete.
     -   [ ] Testing: Run `python scripts/e2e_smoke.py`.
 
 ---
@@ -207,7 +211,7 @@
         -   [ ] Agent uses `write_file` or `apply_patch`.
         -   [ ] Agent sends `{"t": "file_updated", "d": {"path": "path/in/repo", "content": "..."}}` message.
         -   [ ] UI receives `file_updated`, uses `wc.fs.writeFile()`. HMR updates iframe.
-        -   [ ] Initial Scaffolding (MVP): Agent uses `run_shell("npm init -y")`, `run_shell("npm install next...")`, then `write_file` for minimal configs and `app/page.tsx`.
+        -   [ ] **(Revised)** Initial Scaffolding (MVP): Agent uses `run_shell("npx create-next-app ...")`. The agent must then discover the created files (e.g., via `run_shell('ls -R')`) and send them to the UI for mounting in the WebContainer.
     -   [ ] Testing: Agent creates `app/page.tsx` -> appears in iframe. Agent patches `app/page.tsx` -> iframe updates.
 
 ---
@@ -235,6 +239,5 @@
 *   Advanced LSP Tooling
 *   Sophisticated Agent Planning
 *   Error Recovery & Re-planning
-*   Full `npx create-next-app` Scaffolding (efficiently into WebContainer)
 *   State Management in Agent (for workspace understanding)
 *   Security Hardening
