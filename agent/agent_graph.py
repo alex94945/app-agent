@@ -7,6 +7,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 
 from agent.state import AgentState
 from common.config import settings
+from common.llm import get_llm_client
 # We need a generic LLM client for the planner step
 # For now, we can assume it's an OpenAI model.
 # A more sophisticated get_llm_client can be built later if needed.
@@ -24,9 +25,9 @@ def planner_llm_step(state: AgentState) -> AgentState:
     # The state['messages'] will contain the full history.
     prompt_messages = state['messages']
     
-    # Initialize the LLM client for this step
-    # This assumes OpenAI for planning, as per our design.
-    llm = ChatOpenAI(api_key=settings.OPENAI_API_KEY.get_secret_value())
+    # Initialize the LLM client for this step.
+    # This uses the factory for flexibility and testability.
+    llm = get_llm_client(purpose="planner")
     
     logger.info("Invoking LLM for planning...")
     response = llm.invoke(prompt_messages)

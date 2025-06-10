@@ -13,25 +13,34 @@ from agent.agent_graph import run_agent
 logging.basicConfig(level=settings.LOG_LEVEL.upper())
 logger = logging.getLogger(__name__)
 
-# Create the FastAPI app instance
-app = FastAPI(
-    title="Autonomous AI Agent Gateway",
-    description="API Gateway for the Autonomous AI Agent",
-    version="0.1.0"
-)
+from contextlib import asynccontextmanager
 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """
-    Event handler for application startup.
-    Logs the configuration being used.
+    Lifespan manager for the FastAPI application.
+    Resolves REPO_DIR to an absolute path and creates it if it doesn't exist.
     """
+    if not settings.REPO_DIR.is_absolute():
+        settings.REPO_DIR = (PROJECT_ROOT / settings.REPO_DIR).resolve()
+    settings.REPO_DIR.mkdir(parents=True, exist_ok=True)
     logger.info("--- Gateway Startup ---")
     logger.info(f"Host: {settings.HOST}")
     logger.info(f"Port: {settings.PORT}")
     logger.info(f"Log Level: {settings.LOG_LEVEL}")
     logger.info(f"Workspace (REPO_DIR): {settings.REPO_DIR}")
     logger.info("-----------------------")
+    yield
+    # Code here would run on shutdown
+    logger.info("--- Gateway Shutdown ---")
+
+# Create the FastAPI app instance with the lifespan manager
+app = FastAPI(
+    title="Autonomous AI Agent Gateway",
+    description="API Gateway for the Autonomous AI Agent",
+    version="0.1.0",
+    lifespan=lifespan
+)
 
 @app.get("/health", tags=["Health"])
 async def health_check():

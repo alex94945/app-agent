@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Provider for text embeddings ('openai' is the default).
     EMBED_PROVIDER: str = "openai"
 
+    # Model to use for OpenAI LLM calls.
+    OPENAI_MODEL_NAME: str = "gpt-4.1-2025-04-14"
+
     # --- Tool & Service Configuration ---
     # URL for the running Model Context Protocol (MCP) server.
     MCP_SERVER_URL: str = "http://127.0.0.1:8080"
@@ -57,13 +60,6 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra='ignore' # Ignore extra fields from .env file
     )
-
-    def __init__(self, **values):
-        super().__init__(**values)
-        # Resolve REPO_DIR to an absolute path after loading
-        self.REPO_DIR = self.REPO_DIR.resolve()
-        # Ensure the directory exists
-        self.REPO_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # Create a single, importable instance of the settings

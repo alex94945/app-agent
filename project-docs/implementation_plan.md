@@ -82,21 +82,21 @@
             -   [x] Update state with the LLM's response.
     -   [x] Testing: Unit test: invoke graph, check output state.
 
--   [ ] **2. Integrate Agent with FastAPI Gateway (Initial - Final Output):**
-    -   [ ] Action: Modify FastAPI to pass messages to LangGraph and send back the agent's *final* response using the new WebSocket schema.
-    -   [ ] Files: `gateway/main.py`, `agent/agent_graph.py`.
-    -   [ ] Details:
-        -   [ ] Gateway invokes agent.
-        -   [ ] Agent runs until it reaches a "final response" state.
-        -   [ ] Gateway sends this back as a `FinalMessage`.
-    -   [ ] Testing: WebSocket client sends prompt, verifies a `FinalMessage` from the agent's planner is received.
+-   [x] **2. Integrate Agent with FastAPI Gateway (Initial - Final Output):**
+    -   [x] Action: Modify FastAPI to pass messages to LangGraph and send back the agent's *final* response using the new WebSocket schema.
+    -   [x] Files: `gateway/main.py`, `agent/agent_graph.py`.
+    -   [x] Details:
+        -   [x] Gateway invokes agent.
+        -   [x] Agent runs until it reaches a "final response" state.
+        -   [x] Gateway sends this back as a `FinalMessage`.
+    -   [x] Testing: WebSocket client sends prompt, verifies a `FinalMessage` from the agent's planner is received.
 
 -   [ ] **3. Tool Definition & Initial Implementations (`tools/` directory):**
-    -   [ ] General: Add `langchain-community`, `openai`, `chromadb`, `unidiff`, `GitPython`, `modelcontextprotocol`, `python-multipart` to `requirements.txt`.
-    -   [ ] Workspace Setup: All tools operate assuming files are within `os.environ['REPO_DIR']`.
-    -   [ ] **File: `tools/file_io_mcp_tools.py`**
-        -   [ ] Tools: `read_file(path_in_repo: str) -> str`, `write_file(path_in_repo: str, content: str) -> str`
-        -   [ ] Implementation: **Implement for real.** Wrappers around MCP client calls. Paths are relative to `REPO_DIR`.
+    -   [x] General: Add `langchain-community`, `openai`, `chromadb`, `unidiff`, `GitPython`, `modelcontextprotocol`, `python-multipart` to `requirements.txt`.
+    -   [x] Workspace Setup: All tools operate assuming files are within `os.environ['REPO_DIR']`.
+    -   [x] **File: `tools/file_io_mcp_tools.py`**
+        -   [x] Tools: `read_file(path_in_repo: str) -> str`, `write_file(path_in_repo: str, content: str) -> str`
+        -   [x] Implementation: **Implement for real.** Wrappers around MCP client calls. Paths are relative to `REPO_DIR`.
     -   [ ] **File: `tools/shell_mcp_tools.py`**
         -   [ ] Tool: `run_shell(command: str, working_directory_relative_to_repo: Optional[str] = None) -> Dict[str, Any]`
         -   [ ] Implementation: **Implement for real.** Calls MCP `execute_command`.
