@@ -3,6 +3,7 @@
 import logging
 import asyncio # Required for gather if running multiple tools concurrently
 import json
+import re
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage, ToolMessage, ToolCall
@@ -16,7 +17,8 @@ from tools.file_io_mcp_tools import read_file, write_file
 from tools.shell_mcp_tools import run_shell
 from tools.patch_tools import apply_patch
 from tools.vector_store_tools import vector_search
-from tools.lsp_tools import lsp_definition, lsp_hover, get_diagnostics # Assuming get_diagnostics is in lsp_tools.py
+from tools.lsp_tools import lsp_definition, lsp_hover
+from tools.diagnostics_tools import get_diagnostics
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,10 @@ def planner_llm_step(state: AgentState) -> AgentState:
 
     # Prepend the system prompt to the messages for the LLM
     messages_for_llm = []
+    current_project_subdirectory = state.get("project_subdirectory")
+    if current_project_subdirectory:
+        system_prompt_content = system_prompt_content.replace("{{project_subdirectory}}", current_project_subdirectory)
+    
     messages_for_llm.append(SystemMessage(content=system_prompt_content))
     messages_for_llm.extend(state["messages"])  # Add the rest of the messages
 
@@ -118,6 +124,8 @@ async def tool_executor_step(state: AgentState) -> dict:
         return {"messages": []}
 
     tool_messages: list[ToolMessage] = []
+    additional_state_updates: dict = {}
+
     for tool_call in parsed_tool_calls:
         if isinstance(tool_call, dict):
             tool_name = tool_call["name"]
@@ -133,8 +141,33 @@ async def tool_executor_step(state: AgentState) -> dict:
         if tool_name in tool_map:
             selected_tool_func = tool_map[tool_name]
             try:
+                # Inject project_subdirectory for LSP tools if available in state
+                lsp_tool_names = {lsp_definition.name, lsp_hover.name, get_diagnostics.name}
+                if tool_name in lsp_tool_names:
+                    current_project_subdirectory = state.get("project_subdirectory")
+                    if current_project_subdirectory:
+                        # Ensure tool_args is a mutable dictionary
+                        if not isinstance(tool_args, dict):
+                            # This case should ideally not happen if LLM follows schema,
+                            # but as a safeguard if tool_args is some other Pydantic model type.
+                            # Convert to dict if it's a Pydantic model or similar structure.
+                            # For simplicity, assuming it's already a dict or compatible.
+                            # If it's a Pydantic model, tool_args.dict() might be needed,
+                            # but LangChain usually passes dicts for 'args'.
+                            logger.warning(f"Tool args for {tool_name} is not a dict: {type(tool_args)}. Attempting to proceed.")
+                        
+                        # Make a mutable copy if tool_args might be an immutable Pydantic model's .args view
+                        tool_args_mutable = dict(tool_args) if tool_args else {}
+                        tool_args_mutable["project_subdirectory"] = current_project_subdirectory
+                        logger.info(f"Injected project_subdirectory='{current_project_subdirectory}' into args for LSP tool '{tool_name}'. New args: {tool_args_mutable}")
+                        tool_args_to_invoke = tool_args_mutable
+                    else:
+                        tool_args_to_invoke = tool_args # Pass original if no subdirectory
+                else:
+                    tool_args_to_invoke = tool_args # Pass original for non-LSP tools
+
                 # All our tools are defined as async and expect dict args via @tool decorator
-                tool_output = await selected_tool_func.ainvoke(tool_args)
+                tool_output = await selected_tool_func.ainvoke(tool_args_to_invoke)
                 if isinstance(tool_output, dict):
                     # For structured output like from run_shell, serialize to JSON
                     tool_output_content = json.dumps(tool_output, indent=2)
@@ -147,11 +180,29 @@ async def tool_executor_step(state: AgentState) -> dict:
                 tool_output_content = f"Error executing tool {tool_name}: {str(e)}"
             
             tool_messages.append(ToolMessage(content=tool_output_content, tool_call_id=tool_call_id))
+
+            # Check if this was a successful 'create-next-app' command
+            if tool_name == run_shell.name and isinstance(tool_output, dict) and tool_output.get("returncode") == 0:
+                command_str = tool_args.get("command", "")
+                if "create-next-app" in command_str:
+                    # Try to extract the app name. Example: npx create-next-app@latest my-app --ts
+                    match = re.search(r"create-next-app(?:@latest)?\s+([^\s]+)", command_str)
+                    if match:
+                        app_name = match.group(1)
+                        # Remove potential options like --ts from the app_name if they are captured
+                        app_name = app_name.split(' ')[0]
+                        if app_name and not app_name.startswith("--"):
+                            logger.info(f"Detected successful 'create-next-app' for '{app_name}'. Updating project_subdirectory.")
+                            additional_state_updates["project_subdirectory"] = app_name
+                        else:
+                            logger.warning(f"Could not reliably extract app name from '{command_str}' or extracted name is an option: '{app_name}'")
+                    else:
+                        logger.warning(f"'create-next-app' detected in command, but could not extract app name from: {command_str}")
         else:
             logger.error(f"Tool '{tool_name}' not found in tool_map.")
             tool_messages.append(ToolMessage(content=f"Error: Tool '{tool_name}' not found.", tool_call_id=tool_call_id))
 
-    return {"messages": tool_messages}
+    return {"messages": tool_messages, **additional_state_updates}
 
 
 def build_graph():
