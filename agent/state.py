@@ -15,3 +15,6 @@ class AgentState(TypedDict):
     
     # The list of messages that form the conversation history
     messages: Annotated[List[BaseMessage], operator.add]
+
+    # Counter for the number of iterations/planning steps
+    iteration_count: int

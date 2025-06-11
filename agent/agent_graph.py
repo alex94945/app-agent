@@ -2,10 +2,12 @@
 
 import logging
 import asyncio # Required for gather if running multiple tools concurrently
+import json
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage, ToolMessage, ToolCall
 
+from agent.prompts.initial_scaffold import INITIAL_SCAFFOLD_PROMPT
 from agent.state import AgentState
 from common.llm import get_llm_client
 
@@ -17,6 +19,8 @@ from tools.vector_store_tools import vector_search
 from tools.lsp_tools import lsp_definition, lsp_hover, get_diagnostics # Assuming get_diagnostics is in lsp_tools.py
 
 logger = logging.getLogger(__name__)
+
+MAX_ITERATIONS = 10  # Maximum number of planning iterations
 
 # List of all tools for the planner LLM to know about
 all_tools_list = [
@@ -46,24 +50,21 @@ def planner_llm_step(state: AgentState) -> AgentState:
 
     # Add a system prompt to guide the LLM's behavior for initial scaffolding
     # This prompt is specific to the initial task of creating a Next.js app.
-    # It might need to be adjusted or made more general for broader agent capabilities.
-    system_prompt_content = (
-        "You are an expert AI developer. Your primary goal is to assist the user with software development tasks in their repository."
-        "If the user asks to create a new application, and it's the first turn, your first and only action should be to call the `run_shell` tool "
-        "to execute `npx create-next-app@latest my-app --typescript --tailwind --app --eslint --src-dir --import-alias \"@/*\"`. "
-        "Do not ask for confirmation. Do not respond with conversational text. Call the tool directly."
-        "In subsequent turns, analyze the user's request and the output of previous tools to plan your next action. "
-        "This might involve reading files, writing files, running shell commands, applying patches, searching code, or using LSP features."
-    )
-    
+    system_prompt_content = INITIAL_SCAFFOLD_PROMPT
+
+    # Prepend the system prompt to the messages for the LLM
+    messages_for_llm = []
     messages_for_llm.append(SystemMessage(content=system_prompt_content))
-    messages_for_llm.extend(state['messages'])
+    messages_for_llm.extend(state["messages"])  # Add the rest of the messages
 
     logger.info(f"Invoking LLM for planning with {len(messages_for_llm)} messages...")
     response_ai_message = llm.invoke(messages_for_llm)
     logger.info(f"LLM Response: Content='{response_ai_message.content[:100]}...', ToolCalls={response_ai_message.tool_calls}")
-    
-    return {"messages": [response_ai_message]}
+
+    current_iteration_count = state.get('iteration_count', 0) + 1
+    logger.info(f"Planner step completed. Iteration count: {current_iteration_count}")
+
+    return {"messages": [response_ai_message], "iteration_count": current_iteration_count}
 
 async def tool_executor_step(state: AgentState) -> dict:
     """
@@ -134,13 +135,18 @@ async def tool_executor_step(state: AgentState) -> dict:
             try:
                 # All our tools are defined as async and expect dict args via @tool decorator
                 tool_output = await selected_tool_func.ainvoke(tool_args)
-                tool_output_str = str(tool_output)
-                logger.info(f"Tool '{tool_name}' executed successfully. Output (truncated): {tool_output_str[:200]}...")
+                if isinstance(tool_output, dict):
+                    # For structured output like from run_shell, serialize to JSON
+                    tool_output_content = json.dumps(tool_output, indent=2)
+                else:
+                    # For simple string outputs or already stringified errors from tools
+                    tool_output_content = str(tool_output)
+                logger.info(f"Tool '{tool_name}' executed successfully. Output (truncated): {tool_output_content[:200]}...")
             except Exception as e:
                 logger.error(f"Error executing tool '{tool_name}' with args {tool_args}: {e}", exc_info=True)
-                tool_output_str = f"Error executing tool {tool_name}: {str(e)}"
+                tool_output_content = f"Error executing tool {tool_name}: {str(e)}"
             
-            tool_messages.append(ToolMessage(content=tool_output_str, tool_call_id=tool_call_id))
+            tool_messages.append(ToolMessage(content=tool_output_content, tool_call_id=tool_call_id))
         else:
             logger.error(f"Tool '{tool_name}' not found in tool_map.")
             tool_messages.append(ToolMessage(content=f"Error: Tool '{tool_name}' not found.", tool_call_id=tool_call_id))
@@ -155,29 +161,43 @@ def build_graph():
     workflow = StateGraph(AgentState)
 
     workflow.add_node("planner", planner_llm_step)
-    workflow.add_node("tool_executor", tool_executor_step) # LangGraph handles async nodes
+    workflow.add_node("tool_executor", tool_executor_step)
+
+    def max_iterations_handler_node(state: AgentState) -> dict:
+        logger.warning(f"Max iterations ({MAX_ITERATIONS}) reached. Ending graph.")
+        max_iter_message = AIMessage(content=f"Maximum planning iterations ({MAX_ITERATIONS}) reached. Aborting execution.")
+        return {"messages": [max_iter_message], "iteration_count": state.get('iteration_count', MAX_ITERATIONS)}
+
+    workflow.add_node("max_iterations_handler", max_iterations_handler_node)
 
     workflow.set_entry_point("planner")
 
-    def should_route_to_tool_executor(state: AgentState) -> str:
+    def should_route_after_planner(state: AgentState) -> str:
+        logger.info(f"Routing decision: Iteration count = {state.get('iteration_count')}")
+        if state.get('iteration_count', 0) > MAX_ITERATIONS:
+            logger.info("Max iterations reached. Routing to max_iterations_handler.")
+            return "force_end_due_to_iterations"
+        
         last_message = state['messages'][-1]
         if isinstance(last_message, AIMessage) and last_message.tool_calls:
-            logger.info("Routing to tool_executor.")
-            return "tool_executor" # Route to tool_executor if there are tool calls
-        logger.info("No tool calls from LLM. Ending graph.")
-        return END # Otherwise, end the graph
+            logger.info("Tool calls present. Routing to tool_executor.")
+            return "tool_executor"
+        
+        logger.info("No tool calls from LLM and not max iterations. Ending graph.")
+        return "continue_to_end" # End gracefully if no tools and not max iterations
 
     workflow.add_conditional_edges(
         "planner",
-        should_route_to_tool_executor,
+        should_route_after_planner,
         {
             "tool_executor": "tool_executor",
-            END: END
+            "force_end_due_to_iterations": "max_iterations_handler",
+            "continue_to_end": END
         }
     )
     
-    # After tools are executed, route back to the planner to process results
     workflow.add_edge("tool_executor", "planner")
+    workflow.add_edge("max_iterations_handler", END) # Ensure this path also terminates
 
     memory = MemorySaver()
     app = workflow.compile(checkpointer=memory)
@@ -199,9 +219,9 @@ async def run_agent(user_input: str, thread_id: str):
     final_message_to_return = None
 
     async for event in agent_graph.astream_events(
-        {"messages": [initial_message], "input": user_input}, # Ensure 'input' is also part of the initial state if needed by AgentState
+        {"messages": [initial_message], "input": user_input, "iteration_count": 0},
         config=config,
-        version="v1" # Using v1 for events
+        version="v1"
     ):
         kind = event["event"]
         event_name = event.get("name", "N/A") # Some events might not have a 'name'
@@ -218,15 +238,36 @@ async def run_agent(user_input: str, thread_id: str):
         elif kind == "on_tool_end":
             logger.info(f"Tool ended: {event['name']} with output (truncated): {str(event['data'].get('output'))[:200]}...")
         elif kind == "on_chain_end" and event["name"] == "LangGraph": # Graph finished execution for this input
-            final_state = event['data']['output']
-            logger.info(f"__root__ on_chain_end: final_state type: {type(final_state)}, value: {final_state}") # DEBUG LOG
-            planner_state = final_state.get('planner', {})
-            final_messages_from_planner = planner_state.get('messages', [])
-            if final_messages_from_planner:
-                final_message_to_return = final_messages_from_planner[-1]
-                logger.info(f"Agent run completed for thread_id: {thread_id}. Final message from planner: {final_message_to_return}")
+            raw_final_output = event['data']['output']
+            logger.info(f"__root__ on_chain_end: raw_final_output type: {type(raw_final_output)}, value: {raw_final_output}")
+
+            final_messages_list = []
+            output_states = []
+            if isinstance(raw_final_output, list):
+                output_states = raw_final_output
+            elif isinstance(raw_final_output, dict):
+                output_states = [raw_final_output]
+
+            # Prioritize the handler's message if it exists, as it's a definitive terminal state.
+            handler_state = next((s for s in output_states if 'max_iterations_handler' in s), None)
+            if handler_state:
+                final_messages_list = handler_state.get('max_iterations_handler', {}).get('messages', [])
             else:
-                logger.warning(f"Agent run completed for thread_id: {thread_id}, but no final messages found in planner state within final_state: {final_state}")
+                # Otherwise, find the planner's message from the last known state.
+                # In a list, the last item is the most recent state.
+                last_state = output_states[-1] if output_states else {}
+                if 'planner' in last_state:
+                    final_messages_list = last_state.get('planner', {}).get('messages', [])
+                # Fallback for direct message state from a single-node output.
+                elif 'messages' in last_state:
+                    final_messages_list = last_state.get('messages', [])
+
+            if final_messages_list:
+                final_message_to_return = final_messages_list[-1]
+                logger.info(f"Agent run completed for thread_id: {thread_id}. Final message: {final_message_to_return}")
+            else:
+                logger.warning(f"Agent run completed for thread_id: {thread_id}, but could not determine final messages from raw_final_output: {raw_final_output}")
+            
             break # Exit loop once graph is done for this input
         elif kind == "on_chain_error":
             logger.error(f"Error in agent execution for thread_id: {thread_id}. Event: {event}")

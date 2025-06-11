@@ -124,11 +124,11 @@
     -   [ ] Action: Enhance LangGraph agent for tool calling.
     -   [ ] File: `agent/agent_graph.py`
     -   [ ] Details:
-        -   [ ] "planner_llm_step" LLM identifies needed tool.
-        -   [ ] Conditional edge to "tool_executor_step".
-        -   [ ] "tool_executor_step" parses, dispatches, executes tool, stores output in `AgentState`.
-        -   [ ] Edge back to "planner_llm_step" (or "process_tool_result_llm_step").
-        -   [ ] If no tool call, graph to `END`.
+        -   [x] "planner_llm_step" mock / "idealized" LLM identifies needed tool.
+        -   [x] Conditional edge to "tool_executor_step".
+        -   [x] "tool_executor_step" parses, dispatches, executes tool, stores output in `AgentState`.
+        -   [x] Edge back to "planner_llm_step" (or "process_tool_result_llm_step").
+        -   [x] If no tool call, graph to `END`.
         -   [ ] Agent must handle the output of the first `run_shell` call (`create-next-app`).
         -   [ ] Agent's next planned step should be to discover the new file structure (e.g., by calling `run_shell` with `ls -R`).
         -   [ ] Agent must then proceed with the modification loop (read/plan-change/patch/validate) to fulfill the user's prompt.
@@ -141,6 +141,10 @@
 
 **(Corresponds to Design Doc MVP Phase 2, with enhancements)**
 
+-   [x] **0. Cleanup & Refactoring:**
+    -   [x] Action: Abstract prompts into their own folder.
+    -   [x] Files: `agent/agent_graph.py`, `agent/prompts/initial_scaffold.py`, `agent/prompts/__init__.py`
+    
 -   [ ] **1. LSP Integration (TypeScript Language Server):**
     -   [ ] Action: Replace LSP stubs with real `pygls` client calls.
     -   [ ] File: `tools/lsp_tools.py`, `tools/diagnostics_tools.py`, `agent/lsp_manager.py` (new).
