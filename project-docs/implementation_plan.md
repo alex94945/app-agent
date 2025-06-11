@@ -122,7 +122,7 @@
 -   [ ] **4. LangGraph Agent - Tool Routing & Execution:**
     -   [ ] Action: Enhance LangGraph agent for tool calling.
     -   [ ] File: `agent/agent_graph.py`
-    -   [ ] **(Revised)** Details:
+    -   [ ] Details:
         -   [ ] "planner_llm_step" LLM identifies needed tool.
         -   [ ] Conditional edge to "tool_executor_step".
         -   [ ] "tool_executor_step" parses, dispatches, executes tool, stores output in `AgentState`.
@@ -132,7 +132,7 @@
         -   [ ] Agent's next planned step should be to discover the new file structure (e.g., by calling `run_shell` with `ls -R`).
         -   [ ] Agent must then proceed with the modification loop (read/plan-change/patch/validate) to fulfill the user's prompt.
         -   [ ] Agent's internal context must be updated to treat `REPO_DIR/my-app` as the new root for subsequent file operations.
-    -   [ ] Testing: Integration tests for `read_file`, `run_shell`, `vector_search` stub flows.
+    -   [x] Testing: Integration tests for `read_file`, `run_shell` tool flows. `vector_search` stub flow pending.
 
 ---
 
@@ -160,7 +160,7 @@
 -   [ ] **3. CLI Smoke Test (`scripts/e2e_smoke.py`):**
     -   [ ] Action: Create the E2E smoke test script.
     -   [ ] File: `scripts/e2e_smoke.py`
-    -   [ ] **(Revised)** Details:
+    -   [ ] Details:
         -   [ ] Script initializes agent, sets `REPO_DIR` to a temp dir.
         -   [ ] Instructs agent: "Create a new Next.js application."
         -   [ ] The test will **verify that the agent's first tool call is `run_shell` with the `npx create-next-app...` command.**
@@ -211,7 +211,7 @@
         -   [ ] Agent uses `write_file` or `apply_patch`.
         -   [ ] Agent sends `{"t": "file_updated", "d": {"path": "path/in/repo", "content": "..."}}` message.
         -   [ ] UI receives `file_updated`, uses `wc.fs.writeFile()`. HMR updates iframe.
-        -   [ ] **(Revised)** Initial Scaffolding (MVP): Agent uses `run_shell("npx create-next-app ...")`. The agent must then discover the created files (e.g., via `run_shell('ls -R')`) and send them to the UI for mounting in the WebContainer.
+        -   [ ] Initial Scaffolding (MVP): Agent uses `run_shell("npx create-next-app ...")`. The agent must then discover the created files (e.g., via `run_shell('ls -R')`) and send them to the UI for mounting in the WebContainer.
     -   [ ] Testing: Agent creates `app/page.tsx` -> appears in iframe. Agent patches `app/page.tsx` -> iframe updates.
 
 ---
