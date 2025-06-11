@@ -89,7 +89,8 @@
         -   [x] Gateway invokes agent.
         -   [x] Agent runs until it reaches a "final response" state.
         -   [x] Gateway sends this back as a `FinalMessage`.
-    -   [x] Testing: WebSocket client sends prompt, verifies a `FinalMessage` from the agent's planner is received.
+        -   [x] Testing: WebSocket client sends prompt, verifies a `FinalMessage` from the agent's planner is received.
+        -   [x] Stabilize WebSocket integration tests (using TestClient, regressions fixed).
 
 -   [x] **3. Tool Definition & Initial Implementations (`tools/` directory):**
     -   [x] General: Add `langchain-community`, `openai`, `chromadb`, `unidiff`, `GitPython`, `modelcontextprotocol`, `python-multipart` to `requirements.txt`.
@@ -132,7 +133,7 @@
         -   [ ] Agent's next planned step should be to discover the new file structure (e.g., by calling `run_shell` with `ls -R`).
         -   [ ] Agent must then proceed with the modification loop (read/plan-change/patch/validate) to fulfill the user's prompt.
         -   [ ] Agent's internal context must be updated to treat `REPO_DIR/my-app` as the new root for subsequent file operations.
-    -   [x] Testing: Integration tests for `read_file`, `run_shell` tool flows. `vector_search` stub flow pending.
+    -   [x] Testing: Integration tests for `read_file`, `run_shell`, `vector_search` tool flows.
 
 ---
 

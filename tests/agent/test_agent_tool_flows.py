@@ -136,6 +136,89 @@ async def test_initial_create_app_flow_uses_run_shell(mocker):
 
 
 @pytest.mark.asyncio
+async def test_vector_search_flow(mocker):
+    """
+    Tests that the agent, when a vector search is appropriate,
+    correctly calls the vector_search tool and processes its output.
+    """
+    thread_id = "test_vector_search_flow_thread"
+    user_input = "What is the project's main objective?"
+    llm_generated_search_query = "project main objective overview"
+    mock_search_results_list = [
+        {"page_content": "The project aims to build an autonomous AI agent capable of coding tasks.", "metadata": {"source": "design_doc.md", "page": 1}},
+        {"page_content": "Key features include tool usage and self-healing.", "metadata": {"source": "readme.md", "page": 1}}
+    ]
+
+    # 1. Mock the LLM client chain
+    mock_initial_llm = MagicMock()
+    mock_bound_llm = MagicMock()
+    mock_initial_llm.bind_tools.return_value = mock_bound_llm
+
+    expected_vector_search_tool_call = ToolCall(
+        name="vector_search",
+        args={"query": llm_generated_search_query, "k": 3}, # Assuming default k or k is part of LLM decision
+        id="test_vector_search_tool_call_789"
+    )
+    llm_planned_vector_search_response = AIMessage(
+        content="I will search the project documents for information on the main objective.",
+        tool_calls=[expected_vector_search_tool_call]
+    )
+
+    final_llm_response_content_vector_search = f"Based on the project documents, the main objective is: {mock_search_results_list[0]['page_content']} Additional context: {mock_search_results_list[1]['page_content']}"
+    final_llm_response_vector_search = AIMessage(content=final_llm_response_content_vector_search)
+
+    mock_bound_llm.invoke.side_effect = [
+        llm_planned_vector_search_response,  # First call by planner
+        final_llm_response_vector_search     # Second call by planner (after vector_search result)
+    ]
+
+    mocker.patch("agent.agent_graph.get_llm_client", return_value=mock_initial_llm)
+
+    # 2. Mock the vector_search tool
+    vector_search_tool_instance = next(t for t in all_tools_list if t.name == "vector_search")
+    mock_vector_search_coroutine = AsyncMock(return_value=mock_search_results_list)
+    mocker.patch.object(vector_search_tool_instance, 'coroutine', new=mock_vector_search_coroutine)
+
+    # 3. Run the agent
+    final_agent_message = await run_agent(user_input, thread_id)
+
+    # 4. Assertions
+    assert mock_bound_llm.invoke.call_count == 2
+
+    # First call to LLM (planner)
+    planner_llm_call_args_1 = mock_bound_llm.invoke.call_args_list[0]
+    planner_messages_arg_1 = planner_llm_call_args_1[0][0]
+    assert isinstance(planner_messages_arg_1[0], SystemMessage)
+    assert isinstance(planner_messages_arg_1[1], HumanMessage)
+    assert planner_messages_arg_1[1].content == user_input
+
+    # Assert that the tool's coroutine was called correctly
+    mock_vector_search_coroutine.assert_called_once_with(query=llm_generated_search_query, k=3)
+
+    # Assert the content of the final message returned by the agent
+    assert isinstance(final_agent_message, AIMessage)
+    assert final_agent_message.content == final_llm_response_content_vector_search
+    assert not final_agent_message.tool_calls
+
+    # Verify the ToolMessage was correctly added to the state and processed by the second LLM call
+    second_planner_llm_call_args = mock_bound_llm.invoke.call_args_list[1]
+    second_planner_messages_arg = second_planner_llm_call_args[0][0]
+    
+    found_tool_message = None
+    for msg in reversed(second_planner_messages_arg):
+        if isinstance(msg, ToolMessage):
+            found_tool_message = msg
+            break
+    
+    assert found_tool_message is not None, "ToolMessage not found in messages for second planner call"
+    assert found_tool_message.tool_call_id == expected_vector_search_tool_call['id']
+    # The content of ToolMessage for vector_search is a list of dicts, so convert to string for comparison if needed, or check structure.
+    # For simplicity, we'll check if a key part of the content is there.
+    assert str(mock_search_results_list) in found_tool_message.content
+
+
+
+@pytest.mark.asyncio
 async def test_read_file_flow(mocker):
     """
     Tests that the agent, when prompted to read a file,
