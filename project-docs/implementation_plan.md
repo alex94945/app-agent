@@ -153,6 +153,13 @@
         -   [ ] **`agent/lsp_manager.py`:** Manages single `pygls.LanguageServer` for `REPO_DIR`. Handles spin-up, requests, diagnostics. Restarts LSP on `tsconfig.json` write.
         -   [ ] LSP tools call `LspManager` methods.
     -   [ ] Testing: Agent uses `write_file` for TS project in `REPO_DIR`. Test `lsp_definition`, `lsp_hover`. Introduce error, test `get_diagnostics`.
+    -   [ ] **1.1. Refactor `agent/lsp_manager.py` (based on feedback):**
+        -   [ ] **Startup**: Accept `server_command: list[str]` in `__init__` (defaulting to `["typescript-language-server", "--stdio"]`), validate with `shutil.which`.
+        -   [ ] **Handshake**: Use typed `lsprotocol.types.InitializeParams` for `client.initialize()`.
+        -   [ ] **Diagnostics cache**: Protect `_diagnostics` with `asyncio.Lock()` or use copy-on-read.
+        -   [ ] **Process stderr**: Create an `asyncio.create_task` to drain and log `self._process.stderr`.
+        -   [ ] **Singleton/Concurrency**: Replace global `lsp_manager` with a keyed registry (e.g., `managers: dict[Path, LspManager]`) for workspace-specific instances to ensure thread-safety and support parallel operations.
+        -   [ ] **Resource cleanup**: Implement `kill()` fallback after `terminate()` and `wait()` timeout (e.g., `asyncio.TimeoutError` on `self._process.wait(timeout=5)`).
 
 -   [ ] **2. Basic Self-Healing Loop in Agent:**
     -   [ ] Action: Implement self-healing logic.

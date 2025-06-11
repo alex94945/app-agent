@@ -18,7 +18,8 @@ class LspInput(BaseModel):
 async def lsp_definition(file_path_in_repo: str, line: int, character: int) -> Dict[str, Any]:
     """Finds the definition of a symbol in the code using the Language Server."""
     repo_path = str(settings.REPO_DIR)
-    manager = get_lsp_manager(repo_path)
+    manager = await get_lsp_manager(repo_path)
+    await manager.start() # Ensure the LSP server is running
     full_path = f"{repo_path}/{file_path_in_repo}"
     logger.info(f"Getting definition for {full_path}:{line}:{character}")
     return await manager.get_definition(full_path, line, character)
@@ -27,7 +28,8 @@ async def lsp_definition(file_path_in_repo: str, line: int, character: int) -> D
 async def lsp_hover(file_path_in_repo: str, line: int, character: int) -> Dict[str, Any]:
     """Gets hover information for a symbol in the code using the Language Server."""
     repo_path = str(settings.REPO_DIR)
-    manager = get_lsp_manager(repo_path)
+    manager = await get_lsp_manager(repo_path)
+    await manager.start() # Ensure the LSP server is running
     full_path = f"{repo_path}/{file_path_in_repo}"
     logger.info(f"Getting hover for {full_path}:{line}:{character}")
     return await manager.get_hover(full_path, line, character)

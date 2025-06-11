@@ -21,11 +21,8 @@ class DiagnosticsInput(BaseModel):
 async def get_diagnostics(file_path_in_repo: Optional[str] = None) -> List[Dict[str, Any]]:
     """Gets diagnostic information (errors, warnings) for files from the Language Server."""
     repo_path = str(settings.REPO_DIR)
-    manager = get_lsp_manager(repo_path)
-
-    if not manager.client or not manager.client.is_running:
-        logger.warning("LSP client not running. Cannot get diagnostics.")
-        return [{"error": "LSP client is not running. Please start it first."}]
+    manager = await get_lsp_manager(repo_path)
+    await manager.start() # Ensure the LSP server is running
 
     if file_path_in_repo:
         logger.info(f"Getting diagnostics for: {file_path_in_repo}")
@@ -33,4 +30,4 @@ async def get_diagnostics(file_path_in_repo: Optional[str] = None) -> List[Dict[
         return await manager.get_diagnostics(full_path)
     else:
         logger.info("Getting all diagnostics.")
-        return manager.get_all_diagnostics()
+        return await manager.get_all_diagnostics()

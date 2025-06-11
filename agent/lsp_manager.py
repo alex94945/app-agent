@@ -2,20 +2,43 @@
 
 import asyncio
 import logging
+import shutil
+from typing import List, Optional, Dict
+from pathlib import Path
 
 from pygls.lsp.client import BaseLanguageClient
 from pygls.protocol import LanguageServerProtocol
+from lsprotocol import types as lsp_types
 
 logger = logging.getLogger(__name__)
 
 class LspManager:
     """Manages a single Language Server Protocol (LSP) client instance for the workspace."""
 
-    def __init__(self, workspace_path: str):
+    def __init__(self, workspace_path: str, server_command: Optional[List[str]] = None):
         self.workspace_path = workspace_path
         self.client = None
         self._process = None
         self._diagnostics = {}
+
+        if server_command is None:
+            self.server_command = ['typescript-language-server', '--stdio']
+        else:
+            self.server_command = server_command
+
+        if not self.server_command or not self.server_command[0]:
+            raise ValueError("server_command must be a non-empty list with the executable as the first element.")
+
+        executable_path = shutil.which(self.server_command[0])
+        if not executable_path:
+            raise FileNotFoundError(
+                f"LSP server executable '{self.server_command[0]}' not found in PATH. "
+                f"Please ensure it is installed and accessible."
+            )
+        # Use the absolute path found by shutil.which
+        self.server_command[0] = executable_path
+        self._diagnostics_lock = asyncio.Lock()
+        self._stderr_drain_task: Optional[asyncio.Task] = None
 
     async def start(self):
         """Starts the language server process and initializes the client."""
@@ -25,7 +48,7 @@ class LspManager:
 
         logger.info("Starting typescript-language-server...")
         self._process = await asyncio.create_subprocess_exec(
-            'typescript-language-server', '--stdio',
+            *self.server_command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
@@ -41,18 +64,29 @@ class LspManager:
 
         # Register the diagnostics handler
         @self.client.feature('textDocument/publishDiagnostics')
-        def _publish_diagnostics(params):
+        async def _publish_diagnostics(params):
             uri = params.uri
             diagnostics = params.diagnostics
-            self._diagnostics[uri] = diagnostics
+            async with self._diagnostics_lock:
+                self._diagnostics[uri] = diagnostics
             logger.info(f"Received diagnostics for {uri}: {len(diagnostics)} items")
 
         await self.client.start(self._process.stdin, self._process.stdout)
 
         # Initialize the server
         root_uri = f'file://{self.workspace_path}'
-        await self.client.initialize({'processId': self._process.pid, 'rootUri': root_uri, 'capabilities': {}})
+        params = lsp_types.InitializeParams(
+            process_id=self._process.pid,
+            root_uri=root_uri,
+            capabilities=lsp_types.ClientCapabilities()  # Basic capabilities
+        )
+        await self.client.initialize(params)
         logger.info(f"LSP client initialized for workspace: {root_uri}")
+
+        if self._process.stderr:
+            self._stderr_drain_task = asyncio.create_task(self._drain_stream(self._process.stderr, logging.ERROR))
+        else:
+            logger.warning("LSP server process has no stderr stream to drain.")
 
     async def stop(self):
         """Stops the language server client and process."""
@@ -64,9 +98,31 @@ class LspManager:
 
         if self._process and self._process.returncode is None:
             logger.info("Terminating LSP server process...")
+            logger.info(f"Attempting to terminate LSP server process (PID: {self._process.pid})...")
             self._process.terminate()
-            await self._process.wait()
-            self._process = None
+            try:
+                await asyncio.wait_for(self._process.wait(), timeout=5.0)
+                logger.info(f"LSP server process (PID: {self._process.pid}) terminated gracefully.")
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"LSP server process (PID: {self._process.pid}) did not terminate within 5 seconds. Attempting to kill..."
+                )
+                self._process.kill()
+                try:
+                    await asyncio.wait_for(self._process.wait(), timeout=2.0) # Wait for kill to complete
+                    logger.info(f"LSP server process (PID: {self._process.pid}) killed successfully.")
+                except asyncio.TimeoutError:
+                    logger.error(f"LSP server process (PID: {self._process.pid}) did not stop even after kill. It might be orphaned.")
+            except Exception as e:
+                logger.error(f"Error during LSP server process termination: {e}")
+            finally:
+                self._process = None
+        if self._stderr_drain_task and not self._stderr_drain_task.done():
+            self._stderr_drain_task.cancel()
+            try:
+                await self._stderr_drain_task
+            except asyncio.CancelledError:
+                logger.info("Stderr drain task cancelled.")
         logger.info("LSP client and server stopped.")
 
     async def restart(self):
@@ -96,21 +152,45 @@ class LspManager:
     async def get_diagnostics(self, file_path: str) -> list:
         """Retrieves diagnostic information (errors, warnings) for a file."""
         uri = f'file://{file_path}'
-        return self._diagnostics.get(uri, [])
+        async with self._diagnostics_lock:
+            return self._diagnostics.get(uri, [])
 
-    def get_all_diagnostics(self) -> list:
+    async def get_all_diagnostics(self) -> list:
         """Retrieves all diagnostic information stored in the manager, flattened into a single list."""
         all_diags = []
-        for diags in self._diagnostics.values():
-            all_diags.extend(diags)
+        async with self._diagnostics_lock:
+            for diags in self._diagnostics.values():
+                all_diags.extend(diags)
         return all_diags
 
-# Singleton instance to be used by tools
-lsp_manager = None
+    async def _drain_stream(self, stream: asyncio.StreamReader, log_level: int):
+        """Reads lines from a stream and logs them."""
+        while True:
+            try:
+                line = await stream.readline()
+                if not line:
+                    logger.info(f"Stream {stream} closed.")
+                    break
+                logger.log(log_level, f"LSP Server STDERR: {line.decode().strip()}")
+            except Exception as e:
+                logger.error(f"Error draining stream {stream}: {e}")
+                break
 
-def get_lsp_manager(workspace_path: str) -> LspManager:
-    """Factory function to get the singleton LspManager instance."""
-    global lsp_manager
-    if lsp_manager is None:
-        lsp_manager = LspManager(workspace_path)
-    return lsp_manager
+# Registry for LspManager instances, keyed by workspace path
+_lsp_managers_registry: Dict[Path, LspManager] = {}
+_registry_lock = asyncio.Lock()
+
+async def get_lsp_manager(workspace_path: str, server_command: Optional[List[str]] = None) -> LspManager:
+    """Factory function to get an LspManager instance for a given workspace path."""
+    resolved_workspace_path = Path(workspace_path).resolve()
+
+    async with _registry_lock:
+        if resolved_workspace_path not in _lsp_managers_registry:
+            logger.info(f"Creating new LspManager for workspace: {resolved_workspace_path}")
+            manager = LspManager(str(resolved_workspace_path), server_command=server_command)
+            # We might want to defer the start() call to the consumer
+            # await manager.start() # Or not start it here automatically
+            _lsp_managers_registry[resolved_workspace_path] = manager
+        else:
+            logger.info(f"Reusing existing LspManager for workspace: {resolved_workspace_path}")
+        return _lsp_managers_registry[resolved_workspace_path]
