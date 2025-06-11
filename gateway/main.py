@@ -4,7 +4,7 @@ import logging
 import uuid
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 import json
-from common.config import settings
+from common.config import settings, PROJECT_ROOT
 from common.ws_messages import FinalMessage, ErrorMessage
 from agent.agent_graph import run_agent
 
