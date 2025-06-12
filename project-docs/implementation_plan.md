@@ -120,19 +120,19 @@
         -   [x] Implementation: **Stub first.** Return `[]`.
     -   [x] Testing: Unit tests for each tool.
 
--   [ ] **4. LangGraph Agent - Tool Routing & Execution:**
-    -   [ ] Action: Enhance LangGraph agent for tool calling.
-    -   [ ] File: `agent/agent_graph.py`
-    -   [ ] Details:
+-   [x] **4. LangGraph Agent - Tool Routing & Execution:**
+    -   [x] Action: Enhance LangGraph agent for tool calling.
+    -   [x] File: `agent/agent_graph.py` (Primary file for these enhancements)
+    -   [x] Details:
         -   [x] "planner_llm_step" mock / "idealized" LLM identifies needed tool.
         -   [x] Conditional edge to "tool_executor_step".
         -   [x] "tool_executor_step" parses, dispatches, executes tool, stores output in `AgentState`.
         -   [x] Edge back to "planner_llm_step" (or "process_tool_result_llm_step").
         -   [x] If no tool call, graph to `END`.
-        -   [ ] Agent must handle the output of the first `run_shell` call (`create-next-app`).
-        -   [ ] Agent's next planned step should be to discover the new file structure (e.g., by calling `run_shell` with `ls -R`).
-        -   [ ] Agent must then proceed with the modification loop (read/plan-change/patch/validate) to fulfill the user's prompt.
-        -   [ ] Agent's internal context must be updated to treat `REPO_DIR/my-app` as the new root for subsequent file operations.
+        -   [x] Agent must handle the output of the first `run_shell` call (`create-next-app`).
+        -   [x] Agent's next planned step should be to discover the new file structure (e.g., by calling `run_shell` with `ls -R`).
+        -   [x] Agent must then proceed with the modification loop (read/plan-change/patch/validate) to fulfill the user's prompt.
+        -   [x] Agent's internal context must be updated to treat `REPO_DIR/my-app` as the new root for subsequent file operations.
     -   [x] Testing: Integration tests for `read_file`, `run_shell`, `vector_search` tool flows.
 
 ---
@@ -146,20 +146,20 @@
     -   [x] Files: `agent/agent_graph.py`, `agent/prompts/initial_scaffold.py`, `agent/prompts/__init__.py`
     
 -   [ ] **1. LSP Integration (TypeScript Language Server):**
-    -   [ ] Action: Replace LSP stubs with real `pygls` client calls.
+    -   [x] Action: Replace LSP stubs with real `pygls` client calls.
     -   [ ] File: `tools/lsp_tools.py`, `tools/diagnostics_tools.py`, `agent/lsp_manager.py` (new).
-    -   [ ] Details:
-        -   [ ] Add `pygls` to `requirements.txt`. Install `typescript-language-server`.
-        -   [ ] **`agent/lsp_manager.py`:** Manages single `pygls.LanguageServer` for `REPO_DIR`. Handles spin-up, requests, diagnostics. Restarts LSP on `tsconfig.json` write.
-        -   [ ] LSP tools call `LspManager` methods.
+    -   [x] Details:
+        -   [x] Add `pygls` to `requirements.txt`. Install `typescript-language-server`.
+        -   [x] **`agent/lsp_manager.py`:** Manages `pygls.LanguageServer` instances per workspace. Handles spin-up, requests, diagnostics. Restarts LSP on `tsconfig.json` write (via explicit tool call).
+        -   [x] LSP tools call `LspManager` methods.
     -   [ ] Testing: Agent uses `write_file` for TS project in `REPO_DIR`. Test `lsp_definition`, `lsp_hover`. Introduce error, test `get_diagnostics`.
-    -   [ ] **1.1. Refactor `agent/lsp_manager.py` (based on feedback):**
-        -   [ ] **Startup**: Accept `server_command: list[str]` in `__init__` (defaulting to `["typescript-language-server", "--stdio"]`), validate with `shutil.which`.
-        -   [ ] **Handshake**: Use typed `lsprotocol.types.InitializeParams` for `client.initialize()`.
-        -   [ ] **Diagnostics cache**: Protect `_diagnostics` with `asyncio.Lock()` or use copy-on-read.
-        -   [ ] **Process stderr**: Create an `asyncio.create_task` to drain and log `self._process.stderr`.
-        -   [ ] **Singleton/Concurrency**: Replace global `lsp_manager` with a keyed registry (e.g., `managers: dict[Path, LspManager]`) for workspace-specific instances to ensure thread-safety and support parallel operations.
-        -   [ ] **Resource cleanup**: Implement `kill()` fallback after `terminate()` and `wait()` timeout (e.g., `asyncio.TimeoutError` on `self._process.wait(timeout=5)`).
+    -   [x] **1.1. Refactor `agent/lsp_manager.py` (based on feedback):**
+        -   [x] **Startup**: Accept `server_command: list[str]` in `__init__` (defaulting to `["typescript-language-server", "--stdio"]`), validate with `shutil.which`.
+        -   [x] **Handshake**: Use typed `lsprotocol.types.InitializeParams` for `client.initialize()`.
+        -   [x] **Diagnostics cache**: Protect `_diagnostics` with `asyncio.Lock()`.
+        -   [x] **Process stderr**: Create an `asyncio.create_task` to drain and log `self._process.stderr`.
+        -   [x] **Singleton/Concurrency**: Replace global `lsp_manager` with a keyed registry (e.g., `managers: dict[Path, LspManager]`) for workspace-specific instances to ensure thread-safety and support parallel operations.
+        -   [x] **Resource cleanup**: Implement `kill()` fallback after `terminate()` and `wait()` timeout (e.g., `asyncio.TimeoutError` on `self._process.wait(timeout=5)`).
 
 -   [ ] **2. Basic Self-Healing Loop in Agent:**
     -   [ ] Action: Implement self-healing logic.

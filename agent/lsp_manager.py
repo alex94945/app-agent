@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import shutil
 from typing import List, Optional, Dict
 from pathlib import Path
@@ -39,6 +40,8 @@ class LspManager:
         self.server_command[0] = executable_path
         self._diagnostics_lock = asyncio.Lock()
         self._stderr_drain_task: Optional[asyncio.Task] = None
+        self._tsconfig_path: Optional[Path] = None
+        self._tsconfig_mtime: Optional[float] = None
 
     async def start(self):
         """Starts the language server process and initializes the client."""
@@ -87,6 +90,8 @@ class LspManager:
             self._stderr_drain_task = asyncio.create_task(self._drain_stream(self._process.stderr, logging.ERROR))
         else:
             logger.warning("LSP server process has no stderr stream to drain.")
+
+        self._update_tsconfig_mtime() # Initial check and store of tsconfig mtime
 
     async def stop(self):
         """Stops the language server client and process."""
@@ -162,6 +167,60 @@ class LspManager:
             for diags in self._diagnostics.values():
                 all_diags.extend(diags)
         return all_diags
+
+    def _update_tsconfig_mtime(self):
+        """Updates the stored modification time of tsconfig.json if it exists."""
+        if not self._tsconfig_path:
+            self._tsconfig_path = Path(self.workspace_path) / "tsconfig.json"
+        
+        if self._tsconfig_path.exists() and self._tsconfig_path.is_file():
+            try:
+                self._tsconfig_mtime = self._tsconfig_path.stat().st_mtime
+                logger.info(f"Updated tsconfig.json mtime: {self._tsconfig_mtime} for {self._tsconfig_path}")
+            except OSError as e:
+                logger.warning(f"Could not stat {self._tsconfig_path}: {e}")
+                self._tsconfig_mtime = None # Reset if error
+        else:
+            self._tsconfig_mtime = None # tsconfig.json does not exist
+            logger.info(f"No tsconfig.json found at {self._tsconfig_path}, mtime check skipped.")
+
+    async def check_and_restart_on_tsconfig_update(self):
+        """Checks if tsconfig.json has been modified and restarts the LSP server if so."""
+        if not self._tsconfig_path: # Ensure path is initialized
+            self._tsconfig_path = Path(self.workspace_path) / "tsconfig.json"
+
+        if not self._tsconfig_path.exists() or not self._tsconfig_path.is_file():
+            logger.debug(f"No tsconfig.json found at {self._tsconfig_path}. No restart needed based on it.")
+            # If tsconfig was present and now deleted, we might want to restart or clear mtime.
+            # For now, if it's gone, we consider the 'no tsconfig' state as current.
+            if self._tsconfig_mtime is not None:
+                logger.info(f"tsconfig.json at {self._tsconfig_path} was present but now deleted. Clearing stored mtime.")
+                self._tsconfig_mtime = None
+            return
+
+        try:
+            current_mtime = self._tsconfig_path.stat().st_mtime
+        except OSError as e:
+            logger.warning(f"Could not stat {self._tsconfig_path} for mtime check: {e}. Skipping restart check.")
+            return
+
+        if self._tsconfig_mtime is None:
+            # This is the first time we're seeing tsconfig.json (e.g., it was just created)
+            # or it's the first check after manager start/restart.
+            logger.info(f"Initial mtime for {self._tsconfig_path}: {current_mtime}. Storing it.")
+            self._tsconfig_mtime = current_mtime
+            # Potentially restart here if it was just created and we want the LSP to pick it up immediately.
+            # For now, we'll assume the next explicit call or a natural restart will handle it.
+            # Or, if we want to be proactive:
+            # logger.info(f"tsconfig.json appeared or first check. Restarting LSP to ensure it's loaded.")
+            # await self.restart() # This would call _update_tsconfig_mtime again.
+            return
+
+        if current_mtime != self._tsconfig_mtime:
+            logger.info(f"Detected change in {self._tsconfig_path} (old_mtime: {self._tsconfig_mtime}, new_mtime: {current_mtime}). Restarting LSP server.")
+            await self.restart() # self.restart() will call _update_tsconfig_mtime() after successful start
+        else:
+            logger.debug(f"{self._tsconfig_path} mtime ({current_mtime}) unchanged. No restart needed.")
 
     async def _drain_stream(self, stream: asyncio.StreamReader, log_level: int):
         """Reads lines from a stream and logs them."""

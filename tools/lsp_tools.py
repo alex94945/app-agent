@@ -47,3 +47,19 @@ async def lsp_hover(file_path: str, line: int, character: int, project_subdirect
 
     logger.info(f"Getting hover for {file_uri} (workspace: {workspace_path}) at {line}:{character}")
     return await manager.get_hover(file_uri, line, character)
+
+class LspWorkspaceConfigInput(BaseModel):
+    project_subdirectory: Optional[str] = Field(default=None, description="Optional project subdirectory within the repository. If provided, this is the LSP workspace root.")
+
+@tool(args_schema=LspWorkspaceConfigInput)
+async def lsp_workspace_config_check(project_subdirectory: Optional[str] = None) -> str:
+    """Checks for workspace configuration changes (e.g., tsconfig.json updates) and restarts the LSP server if necessary."""
+    repo_dir = Path(settings.REPO_DIR)
+    workspace_path = repo_dir / project_subdirectory if project_subdirectory else repo_dir
+    
+    manager = await get_lsp_manager(str(workspace_path)) # Ensure workspace_path is string for manager key
+    await manager.start() # Ensure the LSP server is running before checking config
+
+    logger.info(f"Checking workspace config for {workspace_path} and restarting LSP if needed.")
+    await manager.check_and_restart_on_tsconfig_update()
+    return f"LSP workspace config check complete for {workspace_path}. Server restarted if tsconfig.json was updated."

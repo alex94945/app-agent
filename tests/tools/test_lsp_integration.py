@@ -3,6 +3,7 @@
 import os
 import pytest
 import tempfile
+import textwrap
 from pathlib import Path
 import pytest_lsp # Required for the @pytest_lsp.fixture decorator
 import asyncio
@@ -11,28 +12,27 @@ from lsprotocol import types as lsp_types
 from pytest_lsp import LanguageClient, ClientServerConfig, client_capabilities
 
 # Sample TypeScript code with a variable and a type error
-TS_CODE_WITH_ERROR = """
-const myVariable: string = 123; // Error: Type 'number' is not assignable to type 'string'.
-"""
+TS_CODE_WITH_ERROR = textwrap.dedent("""
+    const myVariable: string = 123; // Error: Type 'number' is not assignable to type 'string'.
+""").strip()
 
 # tsconfig.json to enable strict type checking
-TSCONFIG_CONTENT = """
-{
+TSCONFIG_CONTENT = {
   "compilerOptions": {
-    "strict": true,
+    "strict": True,
     "target": "ESNext",
     "module": "CommonJS"
-  }
+  },
+  "include": ["**/*"],
 }
-"""
 
-@pytest.fixture(scope="module")
-def workspace_info():
+@pytest.fixture(scope="function")
+def workspace():
     """Creates a temporary workspace with a tsconfig.json and a sample TS file."""
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_path = Path(tmpdir)
         # Create tsconfig.json
-        (repo_path / "tsconfig.json").write_text(TSCONFIG_CONTENT)
+        (repo_path / "tsconfig.json").write_text(str(TSCONFIG_CONTENT).replace("'", '"'))
 
         # Create the sample TypeScript file
         file_path = repo_path / "test.ts"
@@ -43,27 +43,30 @@ def workspace_info():
 @pytest_lsp.fixture(
     config=ClientServerConfig(
         server_command=["typescript-language-server", "--stdio"]
-        # root_uri is set during initialize_session for more dynamic control if needed,
-        # or can be added here if static for the fixture's scope.
     )
 )
-async def client(lsp_client: LanguageClient, workspace_info):
+async def client(lsp_client: LanguageClient, workspace):
     """Setup and teardown for the LSP test client using the new API."""
-    repo_path, _ = workspace_info
+    repo_path, _ = workspace
+    capabilities = client_capabilities("visual-studio-code")
+    
     await lsp_client.initialize_session(
         lsp_types.InitializeParams(
             process_id=os.getpid(),
             root_uri=repo_path.as_uri(),
-            capabilities=client_capabilities("neovim")
+            capabilities=capabilities,
+            workspace_folders=[
+                lsp_types.WorkspaceFolder(uri=repo_path.as_uri(), name="test-workspace")
+            ],
         )
     )
     yield lsp_client
     await lsp_client.shutdown_session()
 
 @pytest.mark.asyncio
-async def test_lsp_integration(client: LanguageClient, workspace_info):
+async def test_lsp_full_lifecycle(client: LanguageClient, workspace):
     """End-to-end test for LSP server interactions using the new API."""
-    repo_path, file_path = workspace_info
+    repo_path, file_path = workspace
     file_uri = file_path.as_uri()
 
     # Notify the server that the document is open
@@ -79,8 +82,6 @@ async def test_lsp_integration(client: LanguageClient, workspace_info):
     )
 
     # 1. Test Diagnostics: Wait for the server to send diagnostics
-    # Ensure the server has time to process and send diagnostics.
-    # wait_for_notification_async will raise TimeoutError if not received.
     try:
         diagnostics_params = await asyncio.wait_for(
             client.wait_for_notification(lsp_types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS),
@@ -98,7 +99,7 @@ async def test_lsp_integration(client: LanguageClient, workspace_info):
     hover_result = await client.text_document_hover_async(
         lsp_types.HoverParams(
             text_document=lsp_types.TextDocumentIdentifier(uri=file_uri),
-            position=lsp_types.Position(line=1, character=7) # 0-indexed, on 'myVariable'
+            position=lsp_types.Position(line=0, character=6) # on 'myVariable'
         )
     )
     assert isinstance(hover_result, lsp_types.Hover)
@@ -106,22 +107,20 @@ async def test_lsp_integration(client: LanguageClient, workspace_info):
     if isinstance(hover_result.contents, lsp_types.MarkupContent):
         assert "const myVariable: string" in hover_result.contents.value
     elif isinstance(hover_result.contents, list):
-        # Handle list of MarkedString or MarkupContent if necessary
         assert any("const myVariable: string" in item.value for item in hover_result.contents if hasattr(item, 'value'))
-    else: # MarkedString (assuming lsp_types.MarkedString which is just a string)
+    else:
         assert "const myVariable: string" in hover_result.contents
 
     # 3. Test Definition
     definition_result = await client.text_document_definition_async(
         lsp_types.DefinitionParams(
             text_document=lsp_types.TextDocumentIdentifier(uri=file_uri),
-            position=lsp_types.Position(line=1, character=7) # 0-indexed, on 'myVariable'
+            position=lsp_types.Position(line=0, character=6) # on 'myVariable'
         )
     )
-    # Definition can return a single Location or a list of Locations or LocationLink[]
+    
     if isinstance(definition_result, list):
         assert len(definition_result) > 0
-        # Assuming we expect one definition for this simple case
         loc = definition_result[0]
         if isinstance(loc, lsp_types.LocationLink):
             loc_uri = loc.target_uri
@@ -134,8 +133,6 @@ async def test_lsp_integration(client: LanguageClient, workspace_info):
         loc_range_start_line = definition_result.range.start.line
     else:
         pytest.fail(f"Unexpected definition result type: {type(definition_result)}. Expected Location or list of Location/LocationLink.")
-        loc_uri = "" # Should not reach here if assertion passes
-        loc_range_start_line = -1
 
     assert loc_uri.endswith('test.ts')
-    assert loc_range_start_line == 1 # 0-indexed, definition is on line 1
+    assert loc_range_start_line == 0
