@@ -13,8 +13,8 @@ DIFF_CONTENT = """--- a/test.txt
 
 @pytest.mark.asyncio
 @patch('tools.patch_tools.uuid.uuid4')
-@patch('tools.patch_tools.ClientSession')
-@patch('tools.patch_tools.streamablehttp_client')
+@patch('common.mcp_session.ClientSession')
+@patch('common.mcp_session.streamablehttp_client')
 async def test_apply_patch_success(mock_http_client, mock_client_session, mock_uuid):
     """Tests that apply_patch successfully writes, applies, and removes a patch."""
     # 1. Setup Mocks
@@ -49,8 +49,8 @@ async def test_apply_patch_success(mock_http_client, mock_client_session, mock_u
 
 @pytest.mark.asyncio
 @patch('tools.patch_tools.uuid.uuid4')
-@patch('tools.patch_tools.ClientSession')
-@patch('tools.patch_tools.streamablehttp_client')
+@patch('common.mcp_session.ClientSession')
+@patch('common.mcp_session.streamablehttp_client')
 async def test_apply_patch_git_failure(mock_http_client, mock_client_session, mock_uuid):
     """Tests that apply_patch handles a failure from the 'git apply' command."""
     # 1. Setup Mocks
@@ -82,8 +82,8 @@ async def test_apply_patch_git_failure(mock_http_client, mock_client_session, mo
 
 @pytest.mark.asyncio
 @patch('tools.patch_tools.uuid.uuid4')
-@patch('tools.patch_tools.ClientSession')
-@patch('tools.patch_tools.streamablehttp_client')
+@patch('common.mcp_session.ClientSession')
+@patch('common.mcp_session.streamablehttp_client')
 async def test_apply_patch_mcp_write_error(mock_http_client, mock_client_session, mock_uuid):
     """Tests that apply_patch handles an MCPError during the file write step."""
     # 1. Setup Mocks

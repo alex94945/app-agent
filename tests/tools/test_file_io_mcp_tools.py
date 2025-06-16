@@ -6,8 +6,8 @@ from tools.file_io_mcp_tools import read_file, write_file
 from mcp.shared.exceptions import McpError, ErrorData
 
 @pytest.mark.asyncio
-@patch('tools.file_io_mcp_tools.ClientSession')
-@patch('tools.file_io_mcp_tools.streamablehttp_client')
+@patch('common.mcp_session.ClientSession')
+@patch('common.mcp_session.streamablehttp_client')
 async def test_read_file_success(mock_http_client, mock_client_session):
     """Tests that read_file successfully calls the MCP client and returns content."""
     # 1. Setup Mocks for async context managers
@@ -28,8 +28,8 @@ async def test_read_file_success(mock_http_client, mock_client_session):
     assert result == "Hello, world!"
 
 @pytest.mark.asyncio
-@patch('tools.file_io_mcp_tools.ClientSession')
-@patch('tools.file_io_mcp_tools.streamablehttp_client')
+@patch('common.mcp_session.ClientSession')
+@patch('common.mcp_session.streamablehttp_client')
 async def test_read_file_mcp_error(mock_http_client, mock_client_session):
     """Tests that read_file handles an MCPError gracefully."""
     # 1. Setup Mock to raise an MCPError
@@ -50,8 +50,8 @@ async def test_read_file_mcp_error(mock_http_client, mock_client_session):
     assert "File not found" in result
 
 @pytest.mark.asyncio
-@patch('tools.file_io_mcp_tools.ClientSession')
-@patch('tools.file_io_mcp_tools.streamablehttp_client')
+@patch('common.mcp_session.ClientSession')
+@patch('common.mcp_session.streamablehttp_client')
 async def test_write_file_success(mock_http_client, mock_client_session):
     """Tests that write_file successfully calls the MCP client."""
     # 1. Setup Mock
@@ -74,8 +74,8 @@ async def test_write_file_success(mock_http_client, mock_client_session):
     assert str(len(file_content)) in result
 
 @pytest.mark.asyncio
-@patch('tools.file_io_mcp_tools.ClientSession')
-@patch('tools.file_io_mcp_tools.streamablehttp_client')
+@patch('common.mcp_session.ClientSession')
+@patch('common.mcp_session.streamablehttp_client')
 async def test_write_file_mcp_error(mock_http_client, mock_client_session):
     """Tests that write_file handles an MCPError gracefully."""
     # 1. Setup Mock to raise an MCPError

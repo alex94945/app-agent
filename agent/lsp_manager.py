@@ -40,6 +40,7 @@ class LspManager:
         self.server_command[0] = executable_path
         self._diagnostics_lock = asyncio.Lock()
         self._stderr_drain_task: Optional[asyncio.Task] = None
+        self._io_task: Optional[asyncio.Task] = None
         self._tsconfig_path: Optional[Path] = None
         self._tsconfig_mtime: Optional[float] = None
 
@@ -74,7 +75,10 @@ class LspManager:
                 self._diagnostics[uri] = diagnostics
             logger.info(f"Received diagnostics for {uri}: {len(diagnostics)} items")
 
-        await self.client.start(self._process.stdin, self._process.stdout)
+        # Start the main IO loop for the protocol
+        # self.client.protocol is the LanguageServerProtocol instance
+        # self._process.stdout is the reader, self._process.stdin is the writer for the server
+        await self.client.start_io(self._process.stdout, self._process.stdin)
 
         # Initialize the server
         root_uri = f'file://{self.workspace_path}'
@@ -95,11 +99,39 @@ class LspManager:
 
     async def stop(self):
         """Stops the language server client and process."""
+        # No separate IO task after start_io; ensure client.stop() later
+        if False and self._io_task:
+            logger.info("Cancelling LSP IO task...")
+            self._io_task.cancel()
+            try:
+                await self._io_task
+            except asyncio.CancelledError:
+                logger.info("LSP IO task cancelled successfully.")
+            except Exception as e:
+                logger.error(f"Error during LSP IO task cancellation: {e}")
+        self._io_task = None  # kept for backward compatibility
+
+        if self._stderr_drain_task and not self._stderr_drain_task.done():
+            logger.info("Cancelling LSP stderr drain task...")
+            self._stderr_drain_task.cancel()
+            try:
+                await self._stderr_drain_task
+            except asyncio.CancelledError:
+                logger.info("LSP stderr drain task cancelled successfully.")
+            except Exception as e:
+                logger.error(f"Error during LSP stderr drain task cancellation: {e}")
+        self._stderr_drain_task = None
+
         if self.client and self.client.is_running:
-            logger.info("Stopping LSP client...")
-            await self.client.shutdown()
-            await self.client.exit()
-            self.client = None
+            logger.info("Stopping LSP client (sending shutdown/exit)...")
+            try:
+                if self.client.protocol.initialized:
+                    await self.client.shutdown()
+                await self.client.exit()
+            except Exception as e:
+                logger.error(f"Error during LSP client shutdown/exit: {e}")
+            await self.client.stop()
+        self.client = None # Clear the client
 
         if self._process and self._process.returncode is None:
             logger.info("Terminating LSP server process...")

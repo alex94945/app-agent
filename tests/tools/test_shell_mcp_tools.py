@@ -5,8 +5,8 @@ from tools.shell_mcp_tools import run_shell
 from mcp.shared.exceptions import McpError, ErrorData
 
 @pytest.mark.asyncio
-@patch('tools.shell_mcp_tools.ClientSession')
-@patch('tools.shell_mcp_tools.streamablehttp_client')
+@patch('common.mcp_session.ClientSession')
+@patch('common.mcp_session.streamablehttp_client')
 async def test_run_shell_success(mock_http_client, mock_client_session):
     """Tests that run_shell successfully executes a command and returns the result."""
     # 1. Setup Mocks
@@ -32,8 +32,8 @@ async def test_run_shell_success(mock_http_client, mock_client_session):
     assert result["stderr"] == ""
 
 @pytest.mark.asyncio
-@patch('tools.shell_mcp_tools.ClientSession')
-@patch('tools.shell_mcp_tools.streamablehttp_client')
+@patch('common.mcp_session.ClientSession')
+@patch('common.mcp_session.streamablehttp_client')
 async def test_run_shell_command_failure(mock_http_client, mock_client_session):
     """Tests that run_shell correctly captures output for a failing command."""
     # 1. Setup Mocks
@@ -58,8 +58,8 @@ async def test_run_shell_command_failure(mock_http_client, mock_client_session):
     assert "no such file or directory" in result["stderr"]
 
 @pytest.mark.asyncio
-@patch('tools.shell_mcp_tools.ClientSession')
-@patch('tools.shell_mcp_tools.streamablehttp_client')
+@patch('common.mcp_session.ClientSession')
+@patch('common.mcp_session.streamablehttp_client')
 async def test_run_shell_mcp_error(mock_http_client, mock_client_session):
     """Tests that run_shell handles an underlying MCPError gracefully."""
     # 1. Setup Mocks

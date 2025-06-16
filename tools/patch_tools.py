@@ -1,17 +1,27 @@
 import logging
 import uuid
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from common.config import settings
-from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from common.mcp_session import open_mcp_session
 from mcp.shared.exceptions import McpError
 
 logger = logging.getLogger(__name__)
 
+
+class ApplyPatchOutputDetails(BaseModel):
+    stdout: str
+    stderr: str
+    return_code: int
+
+class ApplyPatchOutput(BaseModel):
+    ok: bool = Field(description="True if the patch was applied successfully, False otherwise.")
+    file_path_hint: str = Field(description="The file path hint provided in the input.")
+    message: str = Field(description="A summary message indicating success or failure.")
+    details: Optional[ApplyPatchOutputDetails] = Field(default=None, description="Detailed output from the git apply command if it was run.")
 
 class ApplyPatchInput(BaseModel):
     """Input for the apply_patch tool."""
@@ -24,7 +34,7 @@ class ApplyPatchInput(BaseModel):
 
 
 @tool(args_schema=ApplyPatchInput)
-async def apply_patch(file_path_in_repo: str, diff_content: str) -> Dict[str, Any]:
+async def apply_patch(file_path_in_repo: str, diff_content: str) -> ApplyPatchOutput:
     """
     Applies a patch to files in the repository workspace using 'git apply'.
 
@@ -39,53 +49,61 @@ async def apply_patch(file_path_in_repo: str, diff_content: str) -> Dict[str, An
     
     # Generate a unique name for the temporary patch file to avoid collisions.
     temp_patch_filename = f".tmp.apply_patch.{uuid.uuid4()}.patch"
-    result = {}
+    # Initialize parts of the output structure
+    final_ok = False
+    final_message = ""
+    git_apply_details: Optional[ApplyPatchOutputDetails] = None
     
     try:
-        async with streamablehttp_client(base_url=settings.MCP_SERVER_URL) as (reader, writer):
-            async with ClientSession(reader, writer) as session:
-                # 1. Write the diff content to a temporary file in the repo
-                try:
-                    await session.fs.write(path=temp_patch_filename, content=diff_content)
-                    logger.info(f"Wrote patch content to temporary file: {temp_patch_filename}")
-                except McpError as e:
-                    error_message = f"MCP Error writing temporary patch file '{temp_patch_filename}': {e}"
-                    logger.error(error_message)
-                    return {"stdout": "", "stderr": error_message, "return_code": -1}
+        async with open_mcp_session() as session:
+            # 1. Write the diff content to a temporary file in the repo
+            try:
+                await session.call_tool("fs.write", {"path": temp_patch_filename, "content": diff_content})
+                logger.info(f"Wrote patch content to temporary file: {temp_patch_filename}")
+            except McpError as e:
+                error_message = f"MCP Error writing temporary patch file '{temp_patch_filename}': {e}"
+                logger.error(error_message)
+                return ApplyPatchOutput(ok=False, file_path_hint=file_path_in_repo, message=error_message)
 
-                # 2. Apply the patch using git
-                # --unsafe-paths is needed if the patch tries to modify files outside the current dir
-                # --inaccurate-eof is a common flag to handle patches from various sources
-                command = f"git apply --unsafe-paths --inaccurate-eof {temp_patch_filename}"
-                try:
-                    git_result = await session.shell.run(command=command, cwd=".")
-                    result = {
-                        "stdout": git_result.stdout,
-                        "stderr": git_result.stderr,
-                        "return_code": git_result.return_code,
-                    }
-                    if git_result.return_code != 0:
-                        logger.error(f"Error applying patch. Stderr: {git_result.stderr}")
-                    else:
-                        logger.info(f"Successfully applied patch for hint: {file_path_in_repo}")
+            # 2. Apply the patch using git
+            command = f"git apply --unsafe-paths --inaccurate-eof {temp_patch_filename}"
+            try:
+                git_mcp_result = await session.call_tool("shell.run", {"command": command, "cwd": "."})
+                git_apply_details = ApplyPatchOutputDetails(
+                    stdout=git_mcp_result.stdout,
+                    stderr=git_mcp_result.stderr,
+                    return_code=git_mcp_result.return_code
+                )
+                if git_mcp_result.return_code == 0:
+                    final_ok = True
+                    final_message = f"Patch applied successfully to '{file_path_in_repo}'."
+                else:
+                    final_message = f"'git apply' failed with return code {git_mcp_result.return_code}. See details."
+                    logger.warning(final_message)
 
-                except McpError as e:
-                    error_message = f"MCP Error running 'git apply': {e}"
-                    logger.error(error_message)
-                    result = {"stdout": "", "stderr": error_message, "return_code": -1}
+            except McpError as e:
+                error_message = f"MCP Error running 'git apply' for patch '{temp_patch_filename}': {e}"
+                logger.error(error_message)
+                final_message = error_message
 
-                # 3. Clean up the temporary patch file
-                try:
-                    await session.fs.remove(path=temp_patch_filename)
-                    logger.info(f"Removed temporary patch file: {temp_patch_filename}")
-                except McpError as e:
-                    # Log the cleanup error, but don't overwrite the primary result
-                    logger.warning(f"MCP Error removing temporary patch file '{temp_patch_filename}': {e}")
+            # 3. Clean up the temporary patch file
+            try:
+                await session.call_tool("fs.remove", {"path": temp_patch_filename})
+                logger.info(f"Removed temporary patch file: {temp_patch_filename}")
+            except McpError as e:
+                # Log the cleanup error, but don't fail the whole operation since the patch may have succeeded.
+                logger.warning(f"MCP Error removing temporary patch file '{temp_patch_filename}': {e}")
+                if final_ok:
+                    final_message += f" (Warning: failed to remove temporary patch file: {e})"
 
     except Exception as e:
-        error_message = f"Failed to execute apply_patch tool for hint '{file_path_in_repo}': {e}"
-        logger.error(error_message, exc_info=True)
-        return {"stdout": "", "stderr": error_message, "return_code": -1}
+        final_message = f"An unexpected error occurred during apply_patch: {e}"
+        logger.error(final_message, exc_info=True)
 
-    return result
+    return ApplyPatchOutput(
+        ok=final_ok,
+        file_path_hint=file_path_in_repo,
+        message=final_message,
+        details=git_apply_details
+    )
 

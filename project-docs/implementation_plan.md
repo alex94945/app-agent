@@ -145,14 +145,15 @@
     -   [x] Action: Abstract prompts into their own folder.
     -   [x] Files: `agent/agent_graph.py`, `agent/prompts/initial_scaffold.py`, `agent/prompts/__init__.py`
     
--   [ ] **1. LSP Integration (TypeScript Language Server):**
+-   [x] **1. LSP Integration (TypeScript Language Server):**
     -   [x] Action: Replace LSP stubs with real `pygls` client calls.
-    -   [ ] File: `tools/lsp_tools.py`, `tools/diagnostics_tools.py`, `agent/lsp_manager.py` (new).
+    -   [x] File: `tools/lsp_tools.py`, `tools/diagnostics_tools.py`, `agent/lsp_manager.py` (new).
     -   [x] Details:
         -   [x] Add `pygls` to `requirements.txt`. Install `typescript-language-server`.
         -   [x] **`agent/lsp_manager.py`:** Manages `pygls.LanguageServer` instances per workspace. Handles spin-up, requests, diagnostics. Restarts LSP on `tsconfig.json` write (via explicit tool call).
         -   [x] LSP tools call `LspManager` methods.
-    -   [ ] Testing: Agent uses `write_file` for TS project in `REPO_DIR`. Test `lsp_definition`, `lsp_hover`. Introduce error, test `get_diagnostics`.
+    -   [x] Testing: A comprehensive integration test (`test_lsp_integration.py`) has been created to verify diagnostics, hover, and definition functionality directly.
+    -   [ ] Testing (Agent E2E): An end-to-end test is needed to verify the agent can use the LSP tools in a realistic workflow. This will be covered under the "Self-Healing" phase.
     -   [x] **1.1. Refactor `agent/lsp_manager.py` (based on feedback):**
         -   [x] **Startup**: Accept `server_command: list[str]` in `__init__` (defaulting to `["typescript-language-server", "--stdio"]`), validate with `shutil.which`.
         -   [x] **Handshake**: Use typed `lsprotocol.types.InitializeParams` for `client.initialize()`.

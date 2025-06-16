@@ -13,16 +13,17 @@ from agent.state import AgentState
 from common.llm import get_llm_client
 
 # Import all tools
-from tools.file_io_mcp_tools import read_file, write_file
-from tools.shell_mcp_tools import run_shell
-from tools.patch_tools import apply_patch
+from tools.file_io_mcp_tools import read_file, write_file, WriteFileOutput
+from tools.shell_mcp_tools import run_shell, RunShellOutput
+from tools.patch_tools import apply_patch, ApplyPatchOutput
 from tools.vector_store_tools import vector_search
 from tools.lsp_tools import lsp_definition, lsp_hover
-from tools.diagnostics_tools import get_diagnostics
+from tools.diagnostics_tools import get_diagnostics, diagnose
 
 logger = logging.getLogger(__name__)
 
 MAX_ITERATIONS = 10  # Maximum number of planning iterations
+MAX_FIX_ATTEMPTS = 3   # Maximum number of fix attempts for a single tool call ID
 
 # List of all tools for the planner LLM to know about
 all_tools_list = [
@@ -34,6 +35,7 @@ all_tools_list = [
     lsp_definition,
     lsp_hover,
     get_diagnostics,
+    diagnose,
 ]
 
 # Mapping tool names to their callable functions for the executor
@@ -43,7 +45,7 @@ def planner_llm_step(state: AgentState) -> AgentState:
     """
     The primary LLM-powered node that plans the next step or responds.
     """
-    logger.info("Executing planner_llm_step...")
+    logger.info("Executing planner_llm_step... Current iteration=%s, fix_attempts=%s, failing_tool_run=%s", state.get('iteration_count'), state.get('fix_attempts'), state.get('failing_tool_run'))
 
     # Initialize the LLM client for this step, binding all available tools.
     llm = get_llm_client(purpose="planner").bind_tools(all_tools_list)
@@ -63,16 +65,30 @@ def planner_llm_step(state: AgentState) -> AgentState:
     messages_for_llm.append(SystemMessage(content=system_prompt_content))
     messages_for_llm.extend(state["messages"])  # Add the rest of the messages
 
-    logger.info(f"Invoking LLM for planning with {len(messages_for_llm)} messages...")
+    logger.debug("System prompt (truncated to 300 chars): %s", system_prompt_content[:300])
+    logger.info("Invoking LLM for planning with %s messages...", len(messages_for_llm))
     response_ai_message = llm.invoke(messages_for_llm)
+    # Normalize tool_calls to plain dicts so downstream code/tests can use dict access
+    if response_ai_message.tool_calls:
+        normalized_tool_calls = []
+        for tc in response_ai_message.tool_calls:
+            if hasattr(tc, "dict"):
+                normalized_tool_calls.append(tc.dict())
+            else:
+                normalized_tool_calls.append(tc)
+        response_ai_message.tool_calls = normalized_tool_calls
     logger.info(f"LLM Response: Content='{response_ai_message.content[:100]}...', ToolCalls={response_ai_message.tool_calls}")
 
     current_iteration_count = state.get('iteration_count', 0) + 1
-    logger.info(f"Planner step completed. Iteration count: {current_iteration_count}")
+    logger.debug("LLM tool_calls raw: %s", response_ai_message.tool_calls)
+    logger.info("Planner step completed. Iteration count: %s", current_iteration_count)
 
-    return {"messages": [response_ai_message], "iteration_count": current_iteration_count}
+    return {"messages": state["messages"] + [response_ai_message], "iteration_count": current_iteration_count}
 
 async def tool_executor_step(state: AgentState) -> dict:
+    logger.info("Entering tool_executor_step. Current fix_attempts=%s, failing_tool_run=%s, needs_verification=%s", state.get('fix_attempts'), state.get('failing_tool_run'), state.get('needs_verification'))
+    logger.info("Entering tool_executor_step. Current fix_attempts=%s, failing_tool_run=%s, needs_verification=%s", state.get('fix_attempts'), state.get('failing_tool_run'), state.get('needs_verification'))
+    logger.info("Entering tool_executor_step. Current fix_attempts=%s, failing_tool_run=%s", state.get('fix_attempts'), state.get('failing_tool_run'))
     """
     Executes tools based on the LLM's tool_calls.
     """
@@ -124,9 +140,19 @@ async def tool_executor_step(state: AgentState) -> dict:
         return {"messages": []}
 
     tool_messages: list[ToolMessage] = []
+    logger.debug("Parsed %s tool calls to execute.", len(parsed_tool_calls))
     additional_state_updates: dict = {}
+    additional_state_updates['needs_verification'] = False # Default to false, set true only if patch succeeds for a failing run
+    additional_state_updates['needs_verification'] = False # Default to false, set true only if patch succeeds for a failing run
+
+    # Initialize fix attempt state from the incoming state for this execution step.
+    # These will be updated based on the outcomes of the tool calls in this batch.
+    updated_fix_attempts = state.get('fix_attempts', 0)
+    updated_failing_tool_run = state.get('failing_tool_run')
 
     for tool_call in parsed_tool_calls:
+        logger.debug("Executing tool_call id=%s name=%s", getattr(tool_call, 'id', None) if not isinstance(tool_call, dict) else tool_call.get('id'), getattr(tool_call, 'name', None) if not isinstance(tool_call, dict) else tool_call.get('name'))
+        tool_output = None
         if isinstance(tool_call, dict):
             tool_name = tool_call["name"]
             tool_args = tool_call.get("args") or tool_call.get("arguments") or {}
@@ -142,7 +168,7 @@ async def tool_executor_step(state: AgentState) -> dict:
             selected_tool_func = tool_map[tool_name]
             try:
                 # Inject project_subdirectory for LSP tools if available in state
-                lsp_tool_names = {lsp_definition.name, lsp_hover.name, get_diagnostics.name}
+                lsp_tool_names = {lsp_definition.name, lsp_hover.name, get_diagnostics.name, diagnose.name}
                 if tool_name in lsp_tool_names:
                     current_project_subdirectory = state.get("project_subdirectory")
                     if current_project_subdirectory:
@@ -168,21 +194,85 @@ async def tool_executor_step(state: AgentState) -> dict:
 
                 # All our tools are defined as async and expect dict args via @tool decorator
                 tool_output = await selected_tool_func.ainvoke(tool_args_to_invoke)
-                if isinstance(tool_output, dict):
-                    # For structured output like from run_shell, serialize to JSON
+
+                if isinstance(tool_output, RunShellOutput):
+                    if not tool_output.ok:
+                        tool_output_content = f'<error type="shell" command="{tool_output.command_executed}">Error details: {tool_output.stderr}</error>'
+                        logger.error(f"Tool '{tool_name}' failed. Output: {tool_output_content}")
+                    else:
+                        tool_output_content = tool_output.model_dump_json(indent=2)
+                        logger.info(f"Tool '{tool_name}' executed successfully. Output (truncated): {tool_output_content[:200]}...")
+                elif isinstance(tool_output, WriteFileOutput):
+                    if not tool_output.ok:
+                        tool_output_content = f'<error type="file_write" path="{tool_output.path}">Error details: {tool_output.message}</error>'
+                        logger.error(f"Tool '{tool_name}' failed. Output: {tool_output_content}")
+                    else:
+                        tool_output_content = tool_output.model_dump_json(indent=2)
+                        logger.info(f"Tool '{tool_name}' executed successfully. Output (truncated): {tool_output_content[:200]}...")
+                elif isinstance(tool_output, ApplyPatchOutput):
+                    if not tool_output.ok:
+                        stderr_details = tool_output.details.stderr if tool_output.details else ''
+                        tool_output_content = f'<error type="patch" file_path_hint="{tool_output.file_path_hint}">Error details: {tool_output.message} Stderr: {stderr_details}</error>'
+                        logger.error(f"Tool '{tool_name}' failed. Output: {tool_output_content}")
+                    else:
+                        tool_output_content = tool_output.model_dump_json(indent=2)
+                        logger.info(f"Tool '{tool_name}' executed successfully. Output (truncated): {tool_output_content[:200]}...")
+                elif isinstance(tool_output, dict):
+                    # For other structured dict outputs, serialize to JSON
                     tool_output_content = json.dumps(tool_output, indent=2)
+                    logger.info(f"Tool '{tool_name}' executed successfully. Output (truncated): {tool_output_content[:200]}...")
                 else:
-                    # For simple string outputs or already stringified errors from tools
+                    # For simple string outputs or already stringified errors from other tools
                     tool_output_content = str(tool_output)
-                logger.info(f"Tool '{tool_name}' executed successfully. Output (truncated): {tool_output_content[:200]}...")
+                    logger.info(f"Tool '{tool_name}' executed successfully. Output (truncated): {tool_output_content[:200]}...")
             except Exception as e:
                 logger.error(f"Error executing tool '{tool_name}' with args {tool_args}: {e}", exc_info=True)
                 tool_output_content = f"Error executing tool {tool_name}: {str(e)}"
             
             tool_messages.append(ToolMessage(content=tool_output_content, tool_call_id=tool_call_id))
 
+            # Determine tool success for fix attempt logic
+            tool_succeeded = True # Assume success unless explicitly failed by structured output or exception
+            if isinstance(tool_output, (RunShellOutput, WriteFileOutput, ApplyPatchOutput)):
+                if not tool_output.ok:
+                    tool_succeeded = False
+            elif 'Error executing tool' in tool_output_content: # Check for exception-based error messages
+                 tool_succeeded = False
+
+            current_tool_run_details = {"name": tool_name, "args": tool_args, "id": tool_call_id} # Store ID for verification re-run
+            is_part_of_fix_cycle = updated_failing_tool_run is not None
+
+            if tool_succeeded:
+                if tool_name == apply_patch.name and is_part_of_fix_cycle and updated_failing_tool_run['name'] == current_tool_run_details['name'] and updated_failing_tool_run['args'] == current_tool_run_details['args']:
+                    # Successful patch for the specific failing tool run.
+                    # Don't clear failing_tool_run or reset attempts yet. Mark for verification.
+                    logger.info(f"Successful '{apply_patch.name}' for failing tool: {updated_failing_tool_run}. Marking for verification.")
+                    additional_state_updates['needs_verification'] = True
+                    # failing_tool_run and fix_attempts remain until verification confirms the fix.
+                elif is_part_of_fix_cycle and current_tool_run_details['name'] != updated_failing_tool_run['name']:
+                    # A *different* tool succeeded during a fix cycle. This implies the LLM abandoned the original failing tool.
+                    # Consider the fix cycle for the *original* failing_tool_run resolved by this alternative success.
+                    logger.info(f"A different tool '{tool_name}' succeeded during fix cycle for '{updated_failing_tool_run}'. Resetting fix cycle.")
+                    updated_failing_tool_run = None
+                    updated_fix_attempts = 0
+                elif not is_part_of_fix_cycle:
+                    # Standard successful tool run, not part of any fix cycle. No change to fix state.
+                    pass
+            else: # Tool failed
+                # If this failure is for the *same* tool that was already failing, increment attempts.
+                if is_part_of_fix_cycle and updated_failing_tool_run['name'] == current_tool_run_details['name'] and updated_failing_tool_run['args'] == current_tool_run_details['args']:
+                    updated_fix_attempts += 1
+                    logger.info(f"Failing tool {updated_failing_tool_run} failed again. Fix attempts incremented to {updated_fix_attempts}.")
+                else:
+                    # A new tool has failed, or a different tool failed during an existing fix cycle.
+                    # Start/reset the fix cycle for *this specific* failing tool.
+                    logger.info(f"Tool {current_tool_run_details} failed. Starting/resetting fix cycle. Setting attempts to 1.")
+                    updated_failing_tool_run = current_tool_run_details # Store name, args, and ID
+                    updated_fix_attempts = 1
+                    additional_state_updates['needs_verification'] = False # Explicitly false if a new failure occurs
+
             # Check if this was a successful 'create-next-app' command
-            if tool_name == run_shell.name and isinstance(tool_output, dict) and tool_output.get("returncode") == 0:
+            if tool_name == run_shell.name and isinstance(tool_output, RunShellOutput) and tool_output.ok:
                 command_str = tool_args.get("command", "")
                 if "create-next-app" in command_str:
                     # Try to extract the app name. Example: npx create-next-app@latest my-app --ts
@@ -200,8 +290,18 @@ async def tool_executor_step(state: AgentState) -> dict:
                         logger.warning(f"'create-next-app' detected in command, but could not extract app name from: {command_str}")
         else:
             logger.error(f"Tool '{tool_name}' not found in tool_map.")
+            # This case means the tool itself wasn't found, treat as a failure for fix counts
+            logger.error(f"Tool '{tool_name}' not found in tool_map. Treating as failure for fix count.")
+            if tool_call_id == updated_current_tool_call_id_for_fix:
+                updated_fix_attempts_count += 1
+            else:
+                updated_fix_attempts_count = 1
+                updated_current_tool_call_id_for_fix = tool_call_id
             tool_messages.append(ToolMessage(content=f"Error: Tool '{tool_name}' not found.", tool_call_id=tool_call_id))
 
+    additional_state_updates['fix_attempts'] = updated_fix_attempts
+    additional_state_updates['failing_tool_run'] = updated_failing_tool_run
+    logger.info(f"Exiting tool_executor_step. Updated fix_attempts: {updated_fix_attempts}, updated_failing_tool_run: {updated_failing_tool_run}, needs_verification: {additional_state_updates.get('needs_verification')}")
     return {"messages": tool_messages, **additional_state_updates}
 
 
@@ -214,6 +314,80 @@ def build_graph():
     workflow.add_node("planner", planner_llm_step)
     workflow.add_node("tool_executor", tool_executor_step)
 
+    async def verify_node(state: AgentState) -> dict:
+        """
+        Verifies a fix by re-running the original failing tool call.
+        This node is entered only if `needs_verification` is True.
+        """
+        logger.info("Entering verify_node. Current fix_attempts=%s, failing_tool_run=%s", state.get('fix_attempts'), state.get('failing_tool_run'))
+        
+        failing_tool_run_details = state.get('failing_tool_run')
+        if not failing_tool_run_details:
+            logger.error("Verify_node was entered but failing_tool_run is not set. This should not happen. Skipping verification.")
+            return {"messages": [ToolMessage(content="<error type='internal'>Verify node error: no failing_tool_run details.</error>", tool_call_id="verify_node_internal_error")], "needs_verification": False}
+
+        tool_name_to_verify = failing_tool_run_details['name']
+        tool_args_to_verify = failing_tool_run_details['args']
+        original_tool_call_id = failing_tool_run_details.get('id', f"verify_{tool_name_to_verify}")
+
+        logger.info(f"Attempting to verify by re-running tool: '{tool_name_to_verify}' with args: {tool_args_to_verify}")
+
+        tool_output = None
+        tool_succeeded = False
+        output_content = ""
+        additional_state_updates = {}
+
+        if tool_name_to_verify in tool_map:
+            selected_tool_func = tool_map[tool_name_to_verify]
+            try:
+                lsp_tool_names = {lsp_definition.name, lsp_hover.name, get_diagnostics.name, diagnose.name}
+                tool_args_to_invoke = dict(tool_args_to_verify) 
+                if tool_name_to_verify in lsp_tool_names:
+                    current_project_subdirectory = state.get("project_subdirectory")
+                    if current_project_subdirectory:
+                        tool_args_to_invoke["project_subdirectory"] = current_project_subdirectory
+                
+                tool_output = await selected_tool_func.ainvoke(tool_args_to_invoke)
+
+                if isinstance(tool_output, (RunShellOutput, WriteFileOutput, ApplyPatchOutput)):
+                    tool_succeeded = tool_output.ok
+                    output_content = tool_output.model_dump_json(indent=2) if tool_succeeded else f'<error type="{tool_name_to_verify}">{tool_output.message if hasattr(tool_output, "message") else "Verification failed."}</error>'
+                elif isinstance(tool_output, dict):
+                    tool_succeeded = True 
+                    output_content = json.dumps(tool_output, indent=2)
+                else:
+                    tool_succeeded = True 
+                    output_content = str(tool_output)
+                
+                if not tool_succeeded and not output_content.startswith("<error"):
+                     output_content = f"<error type='verification_failure'>Tool {tool_name_to_verify} failed during verification. Output: {str(tool_output)}</error>"
+
+            except Exception as e:
+                logger.error(f"Error during verification execution of tool '{tool_name_to_verify}': {e}", exc_info=True)
+                output_content = f"<error type='verification_exception'>Exception during verification of {tool_name_to_verify}: {str(e)}</error>"
+                tool_succeeded = False
+        else:
+            logger.error(f"Tool '{tool_name_to_verify}' (for verification) not found in tool_map.")
+            output_content = f"<error type='internal'>Tool {tool_name_to_verify} not found for verification.</error>"
+            tool_succeeded = False
+
+        if tool_succeeded:
+            logger.info(f"Verification successful for {failing_tool_run_details}. Clearing fix cycle.")
+            additional_state_updates['failing_tool_run'] = None
+            additional_state_updates['fix_attempts'] = 0
+        else:
+            current_fix_attempts = state.get('fix_attempts', 0)
+            additional_state_updates['fix_attempts'] = current_fix_attempts + 1
+            logger.warning(f"Verification failed for {failing_tool_run_details}. Fix attempts now {additional_state_updates['fix_attempts']}.")
+
+        additional_state_updates['needs_verification'] = False 
+        
+        tool_message = ToolMessage(content=output_content, tool_call_id=original_tool_call_id + "_verify")
+        logger.info(f"Exiting verify_node. Updated state: {additional_state_updates}")
+        return {"messages": [tool_message], **additional_state_updates}
+
+    workflow.add_node("verify_step", verify_node)
+
     def max_iterations_handler_node(state: AgentState) -> dict:
         logger.warning(f"Max iterations ({MAX_ITERATIONS}) reached. Ending graph.")
         max_iter_message = AIMessage(content=f"Maximum planning iterations ({MAX_ITERATIONS}) reached. Aborting execution.")
@@ -221,13 +395,32 @@ def build_graph():
 
     workflow.add_node("max_iterations_handler", max_iterations_handler_node)
 
+    def max_fix_attempts_handler_node(state: AgentState) -> dict:
+        failing_tool_run = state.get('failing_tool_run', 'unknown tool')
+        attempts = state.get('fix_attempts', MAX_FIX_ATTEMPTS)
+        logger.warning(f"Max fix attempts ({attempts}) reached for tool run '{failing_tool_run}'. Ending graph.")
+        max_fix_message = AIMessage(
+            content=f"Maximum fix attempts ({attempts}) reached for a failing tool: {failing_tool_run}. Aborting further attempts on this issue."
+        )
+        return {
+            "messages": [max_fix_message],
+            "fix_attempts": 0, 
+            "failing_tool_run": None
+        }
+    workflow.add_node("max_fix_attempts_handler", max_fix_attempts_handler_node)
+
     workflow.set_entry_point("planner")
 
     def should_route_after_planner(state: AgentState) -> str:
-        logger.info(f"Routing decision: Iteration count = {state.get('iteration_count')}")
+        logger.info(f"Routing decision: Iteration count = {state.get('iteration_count')}, Fix attempts = {state.get('fix_attempts', 0)}")
         if state.get('iteration_count', 0) > MAX_ITERATIONS:
             logger.info("Max iterations reached. Routing to max_iterations_handler.")
             return "force_end_due_to_iterations"
+        
+        current_fix_attempts = state.get('fix_attempts', 0)
+        if current_fix_attempts >= MAX_FIX_ATTEMPTS:
+            logger.info(f"Max fix attempts ({current_fix_attempts}) reached for tool {state.get('failing_tool_run')}. Routing to max_fix_attempts_handler.")
+            return "force_end_due_to_fix_attempts"
         
         last_message = state['messages'][-1]
         if isinstance(last_message, AIMessage) and last_message.tool_calls:
@@ -235,7 +428,7 @@ def build_graph():
             return "tool_executor"
         
         logger.info("No tool calls from LLM and not max iterations. Ending graph.")
-        return "continue_to_end" # End gracefully if no tools and not max iterations
+        return "continue_to_end"
 
     workflow.add_conditional_edges(
         "planner",
@@ -243,12 +436,50 @@ def build_graph():
         {
             "tool_executor": "tool_executor",
             "force_end_due_to_iterations": "max_iterations_handler",
+            "force_end_due_to_fix_attempts": "max_fix_attempts_handler",
             "continue_to_end": END
         }
     )
     
-    workflow.add_edge("tool_executor", "planner")
-    workflow.add_edge("max_iterations_handler", END) # Ensure this path also terminates
+    workflow.add_edge("max_iterations_handler", END)
+    workflow.add_edge("max_fix_attempts_handler", END)
+
+    def should_route_after_tool_executor(state: AgentState) -> str:
+        if state.get('needs_verification', False):
+            logger.info("Routing after tool_executor: Needs verification. Routing to verify_step.")
+            return "verify_step"
+        logger.info("Routing after tool_executor: No verification needed. Routing to planner.")
+        return "planner"
+
+    workflow.add_conditional_edges(
+        "tool_executor",
+        should_route_after_tool_executor,
+        {
+            "verify_step": "verify_step",
+            "planner": "planner"
+        }
+    )
+
+    def should_route_after_verify_node(state: AgentState) -> str:
+        if state.get('failing_tool_run') is None: 
+            logger.info("Routing after verify_step: Verification successful. Routing to planner.")
+            return "planner"
+        
+        if state.get('fix_attempts', 0) >= MAX_FIX_ATTEMPTS:
+            logger.info(f"Routing after verify_step: Verification failed, max fix attempts ({state.get('fix_attempts')}) reached. Routing to max_fix_attempts_handler.")
+            return "max_fix_attempts_handler"
+        
+        logger.info(f"Routing after verify_step: Verification failed, {state.get('fix_attempts')} attempts. Routing to planner for another fix.")
+        return "planner" 
+
+    workflow.add_conditional_edges(
+        "verify_step",
+        should_route_after_verify_node,
+        {
+            "planner": "planner",
+            "max_fix_attempts_handler": "max_fix_attempts_handler"
+        }
+    )
 
     memory = MemorySaver()
     app = workflow.compile(checkpointer=memory)

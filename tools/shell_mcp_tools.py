@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from common.mcp_session import open_mcp_session
 from mcp.shared.exceptions import McpError
 from common.config import settings
 
@@ -19,34 +19,57 @@ class RunShellInput(BaseModel):
         description="The directory within the repo to run the command from. Defaults to the repo root."
     )
 
+# --- Pydantic Schema for Tool Output ---
+
+class RunShellOutput(BaseModel):
+    ok: bool = Field(description="True if the command executed successfully (return code 0), False otherwise.")
+    return_code: int = Field(description="The return code of the command.")
+    stdout: str = Field(description="The standard output of the command.")
+    stderr: str = Field(description="The standard error of the command.")
+    command_executed: str = Field(description="The command that was executed.")
+
 # --- Tool Implementation ---
 
 @tool(args_schema=RunShellInput)
-async def run_shell(command: str, working_directory_relative_to_repo: Optional[str] = None) -> Dict[str, Any]:
+async def run_shell(command: str, working_directory_relative_to_repo: Optional[str] = None) -> RunShellOutput:
     """
     Executes a shell command in the repository workspace.
     Returns a dictionary with stdout, stderr, and the return code.
     """
     logger.info(f"Tool: run_shell called with command: '{command}' in dir: '{working_directory_relative_to_repo}'")
     try:
-        async with streamablehttp_client(base_url=settings.MCP_SERVER_URL) as (reader, writer):
-            async with ClientSession(reader, writer) as session:
-                # The MCP shell.run method executes the command
-                result = await session.shell.run(
-                    command=command,
-                    cwd=working_directory_relative_to_repo or "."
-                )
-                # The result object is expected to have stdout, stderr, and return_code attributes
-                return {
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "return_code": result.return_code
+        async with open_mcp_session() as session:
+            result = await session.call_tool(
+                "shell.run",
+                arguments={
+                    "command": command,
+                    "cwd": working_directory_relative_to_repo or "."
                 }
+            )
+        return RunShellOutput(
+            ok=result.return_code == 0,
+            return_code=result.return_code,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            command_executed=command,
+        )
     except McpError as e:
         error_message = f"MCP Error running command '{command}': {e}"
         logger.error(error_message)
-        return {"stdout": "", "stderr": error_message, "return_code": -1}
+        return RunShellOutput(
+            ok=False,
+            return_code=-1, 
+            stdout="",
+            stderr=error_message,
+            command_executed=command
+        )
     except Exception as e:
         error_message = f"Failed to execute run_shell tool for command '{command}': {e}"
         logger.error(error_message, exc_info=True)
-        return {"stdout": "", "stderr": error_message, "return_code": -1}
+        return RunShellOutput(
+            ok=False,
+            return_code=-1,
+            stdout="",
+            stderr=error_message,
+            command_executed=command,
+        )
