@@ -140,45 +140,12 @@
 
 ### **Phase 2: Real LSP, Self-Healing & CLI Smoke Test**
 
---- 
-
-### **Phase 2.5: Refactor `tool_executor_step` in `agent/agent_graph.py`**
-
-- [x] **Refactor `tool_executor_step` for clarity, testability, and maintainability.**
-    - [x] Step 1: Extract pure helper functions:
-        - [x] `parse_tool_calls(message: AIMessage) -> list[ToolCall]`
-        - [x] `maybe_inject_subdir(args: dict, tool_name: str, state: AgentState) -> dict`
-    - [x] Step 2: Introduce `FixCycleTracker` dataclass:
-        - [x] Define `FixCycleTracker` in `agent/executor/fix_cycle.py`.
-        - [x] Implement `record_result` and `needs_verification` methods.
-        - [x] Write comprehensive unit tests for `FixCycleTracker` mirroring current edge-cases (increment vs. reset logic for attempts, conditions for needing verification).
-    - [x] Step 3: Replace output handling ladder with an `OUTPUT_HANDLERS` registry:
-        - [x] Create `agent/executor/output_handlers.py`.
-        - [x] Define `is_tool_successful(tool_output: Any) -> bool` using a registry.
-        - [x] Define `format_tool_output(tool_output: Any) -> str` using a similar registry or integrate into the success handlers.
-        - [x] Start with handlers for `RunShellOutput`, `WriteFileOutput`, `ApplyPatchOutput`, and a fallback.
-    - [x] Step 4: Rewrite main `tool_executor_step` loop:
-        - [x] Create `agent/executor/runner.py` for `async def run_single_tool(call: ToolCall, state: AgentState, tool_map: dict) -> Any`.
-        - [x] Create `agent/executor/executor.py` for the new `async def tool_executor_step(state: AgentState) -> dict`.
-        - [x] The new `tool_executor_step` will use `parse_tool_calls`, `FixCycleTracker`, `run_single_tool`, `is_tool_successful`, and `format_tool_output`.
-        - [x] Keep the old `tool_executor_step` in `agent/agent_graph.py` alongside the new one (e.g., `_tool_executor_step_legacy`), selectable via a temporary flag or by commenting out, until all tests pass with the new implementation.
-        - [x] Update `agent_graph.py` to import and use the new `tool_executor_step` from `agent.executor.executor`.
-    - [x] Step 5: Clean up and finalize:
-        - [x] Delete dead logs and duplicate assignments identified in the original `tool_executor_step`.
-        - [x] Once the new implementation is stable and all tests pass, remove the legacy `_tool_executor_step_legacy`.
-        - [x] Ensure all relevant imports are updated and old ones removed.
-    - [x] Update `architecture.md` to reflect the new `agent/executor/` module structure.
-
----
-
-### **Phase 3: UI, WebContainer Preview & Streaming**
-
 **(Corresponds to Design Doc MVP Phase 2, with enhancements)**
 
 -   [x] **0. Cleanup & Refactoring:**
     -   [x] Action: Abstract prompts into their own folder.
     -   [x] Files: `agent/agent_graph.py`, `agent/prompts/initial_scaffold.py`, `agent/prompts/__init__.py`
-    
+
 -   [x] **1. LSP Integration (TypeScript Language Server):**
     -   [x] Action: Replace LSP stubs with real `pygls` client calls.
     -   [x] File: `tools/lsp_tools.py`, `tools/diagnostics_tools.py`, `agent/lsp_manager.py` (new).
@@ -228,6 +195,35 @@
         -   [ ] The test will **verify that the agent's first tool call is `run_shell` with the `npx create-next-app...` command.**
         -   [ ] The test will then assert that the `REPO_DIR/my-app/package.json` file exists after the agent run is complete.
     -   [ ] Testing: Run `python scripts/e2e_smoke.py`.
+
+---
+
+### **Phase 2.5: Refactor `tool_executor_step` in `agent/agent_graph.py`**
+
+- [x] **Refactor `tool_executor_step` for clarity, testability, and maintainability.**
+    - [x] Step 1: Extract pure helper functions:
+        - [x] `parse_tool_calls(message: AIMessage) -> list[ToolCall]`
+        - [x] `maybe_inject_subdir(args: dict, tool_name: str, state: AgentState) -> dict`
+    - [x] Step 2: Introduce `FixCycleTracker` dataclass:
+        - [x] Define `FixCycleTracker` in `agent/executor/fix_cycle.py`.
+        - [x] Implement `record_result` and `needs_verification` methods.
+        - [x] Write comprehensive unit tests for `FixCycleTracker` mirroring current edge-cases (increment vs. reset logic for attempts, conditions for needing verification).
+    - [x] Step 3: Replace output handling ladder with an `OUTPUT_HANDLERS` registry:
+        - [x] Create `agent/executor/output_handlers.py`.
+        - [x] Define `is_tool_successful(tool_output: Any) -> bool` using a registry.
+        - [x] Define `format_tool_output(tool_output: Any) -> str` using a similar registry or integrate into the success handlers.
+        - [x] Start with handlers for `RunShellOutput`, `WriteFileOutput`, `ApplyPatchOutput`, and a fallback.
+    - [x] Step 4: Rewrite main `tool_executor_step` loop:
+        - [x] Create `agent/executor/runner.py` for `async def run_single_tool(call: ToolCall, state: AgentState, tool_map: dict) -> Any`.
+        - [x] Create `agent/executor/executor.py` for the new `async def tool_executor_step(state: AgentState) -> dict`.
+        - [x] The new `tool_executor_step` will use `parse_tool_calls`, `FixCycleTracker`, `run_single_tool`, `is_tool_successful`, and `format_tool_output`.
+        - [x] Keep the old `tool_executor_step` in `agent/agent_graph.py` alongside the new one (e.g., `_tool_executor_step_legacy`), selectable via a temporary flag or by commenting out, until all tests pass with the new implementation.
+        - [x] Update `agent_graph.py` to import and use the new `tool_executor_step` from `agent.executor.executor`.
+    - [x] Step 5: Clean up and finalize:
+        - [x] Delete dead logs and duplicate assignments identified in the original `tool_executor_step`.
+        - [x] Once the new implementation is stable and all tests pass, remove the legacy `_tool_executor_step_legacy`.
+        - [x] Ensure all relevant imports are updated and old ones removed.
+    - [x] Update `architecture.md` to reflect the new `agent/executor/` module structure.
 
 ---
 
