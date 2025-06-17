@@ -73,10 +73,10 @@ async def apply_patch(file_path_in_repo: str, diff_content: str) -> ApplyPatchOu
                         "cwd": str(settings.REPO_DIR),
                     },
                 )
-                if not git_mcp_result or not isinstance(git_mcp_result[0], TextContent):
+                if not git_mcp_result or not hasattr(git_mcp_result, 'content') or not git_mcp_result.content or not isinstance(git_mcp_result.content[0], TextContent):
                     raise McpError(message="Invalid response from shell.run for git apply")
 
-                shell_run_output = json.loads(git_mcp_result[0].text)
+                shell_run_output = json.loads(git_mcp_result.content[0].text)
                 shell_result = ShellRunResult(**shell_run_output)
 
                 if shell_result.return_code != 0:

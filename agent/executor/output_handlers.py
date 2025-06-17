@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from tools.shell_mcp_tools import RunShellOutput
 from tools.file_io_mcp_tools import WriteFileOutput
-from tools.patch_tools import ApplyPatchOutput, ApplyPatchOutputDetails # ApplyPatchOutputDetails is nested in ApplyPatchOutput
+from tools.patch_tools import ApplyPatchOutput, ShellRunResult # ShellRunResult holds the details for ApplyPatchOutput
 
 # --- Output Handler Protocol & Implementations ---
 

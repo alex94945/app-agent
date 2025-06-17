@@ -42,13 +42,31 @@ async def read_file(path_in_repo: str) -> str:
         async with open_mcp_session() as session:
             content = await session.call_tool("fs.read", {"path": str(Path(settings.REPO_DIR) / path_in_repo)})
             logger.debug(f"read_file: session.call_tool returned: {content!r} (type: {type(content)})")
-            if content and isinstance(content, list) and len(content) > 0 and hasattr(content[0], 'text'):
+
+            # Detailed logging for debugging content structure
+            if hasattr(content, 'content'):
+                if content.content:
+                    logger.debug(f"read_file: content.content is present. Type: {type(content.content)}, Value: {content.content}")
+                    if isinstance(content.content, list):
+                        logger.debug(f"read_file: content.content is a list. Length: {len(content.content)}")
+                        if len(content.content) == 1:
+                            logger.debug(f"read_file: content.content has 1 element. Element type: {type(content.content[0])}")
+                        else:
+                            logger.debug(f"read_file: content.content list length is not 1.")
+                    else:
+                        logger.debug(f"read_file: content.content is not a list.")
+                else:
+                    logger.debug(f"read_file: content.content is None or empty.")
+            else:
+                logger.debug(f"read_file: content does not have attribute 'content'.")
+
+            if hasattr(content, 'content') and content.content and isinstance(content.content, list) and len(content.content) > 0 and hasattr(content.content[0], 'text'):
                 # Assuming TextContent or a similar structure with a .text attribute
                 # Based on docs, call_tool returns List[mcp.types.TextContent | mcp.types.ImageContent | ...]
                 # For fs.read, we expect a single TextContent.
                 # The actual type from fastmcp might be mcp.sdk.types.Content (which has .text)
                 # or mcp.types.TextContent (also has .text)
-                processed_content = content[0].text
+                processed_content = content.content[0].text
                 logger.debug(f"read_file: processed content to string: {processed_content!r}")
                 return processed_content
             elif isinstance(content, str): # Should not happen based on docs, but as a fallback

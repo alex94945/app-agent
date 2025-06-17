@@ -14,7 +14,7 @@ from agent.executor.output_handlers import (
 )
 from tools.shell_mcp_tools import RunShellOutput
 from tools.file_io_mcp_tools import WriteFileOutput
-from tools.patch_tools import ApplyPatchOutput, ApplyPatchOutputDetails
+from tools.patch_tools import ApplyPatchOutput, ShellRunResult
 
 
 # --- Test Data ---
@@ -70,7 +70,7 @@ def mock_apply_patch_output_failure():
         ok=False,
         file_path_hint="file.py",
         message="Patch application failed.",
-        details=ApplyPatchOutputDetails(stdout="", stderr="Git apply error", return_code=1)
+        details=ShellRunResult(stdout="", stderr="Git apply error", return_code=1)
     )
 
 class UnknownOutput(BaseModel):

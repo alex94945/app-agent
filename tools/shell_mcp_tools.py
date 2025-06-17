@@ -47,7 +47,7 @@ async def run_shell(command: str, working_directory_relative_to_repo: Optional[s
         async with open_mcp_session() as session:
             mcp_result = await session.call_tool(
                 "shell.run",
-                arguments={"command": command, "cwd": absolute_cwd},
+                arguments={"command": command, "working_directory_relative_to_repo": absolute_cwd},
             )
 
             # mcp_result is a list of content items from FastMCP, e.g., [TextContent(...)]
