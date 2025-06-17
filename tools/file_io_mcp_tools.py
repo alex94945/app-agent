@@ -1,6 +1,7 @@
 # tools/file_io_mcp_tools.py
 
 import logging
+from pathlib import Path
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 
@@ -35,8 +36,11 @@ async def read_file(path_in_repo: str) -> str:
     """
     logger.info(f"Tool: read_file called for path: {path_in_repo}")
     try:
+        # The mock MCP server's fs.read tool operates relative to its own CWD.
+        # The agent provides paths relative to the repo root.
+        # We must resolve the path to be absolute for the mock server.
         async with open_mcp_session() as session:
-            content = await session.call_tool("fs.read", {"path": path_in_repo})
+            content = await session.call_tool("fs.read", {"path": str(Path(settings.REPO_DIR) / path_in_repo)})
             return content
     except McpError as e:
         error_message = f"MCP Error reading file '{path_in_repo}': {e}"

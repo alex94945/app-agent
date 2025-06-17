@@ -1,12 +1,13 @@
 import logging
+import json
 from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 
 from mcp import ClientSession
 from common.mcp_session import open_mcp_session
-from mcp.shared.exceptions import McpError
-from common.config import settings
+from mcp.shared.exceptions import McpError, ErrorData
+from common.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -38,19 +39,41 @@ async def run_shell(command: str, working_directory_relative_to_repo: Optional[s
     """
     logger.info(f"Tool: run_shell called with command: '{command}' in dir: '{working_directory_relative_to_repo}'")
     try:
+        settings = get_settings()
+        repo_dir = settings.REPO_DIR
+        absolute_cwd = str(repo_dir)
+        if working_directory_relative_to_repo:
+            absolute_cwd = str(repo_dir / working_directory_relative_to_repo)
         async with open_mcp_session() as session:
-            result = await session.call_tool(
+            mcp_result = await session.call_tool(
                 "shell.run",
-                arguments={
-                    "command": command,
-                    "cwd": working_directory_relative_to_repo or "."
-                }
+                arguments={"command": command, "cwd": absolute_cwd},
             )
+
+            # mcp_result is a list of content items from FastMCP, e.g., [TextContent(...)]
+            # It could be empty if the tool returns nothing, or if there's an issue
+            # not caught by ToolError during the call_tool execution itself.
+            if not mcp_result or not isinstance(mcp_result, list) or len(mcp_result) == 0:
+                logger.error("MCP tool 'shell.run' returned no content or unexpected format.")
+                # Raise McpError to be caught by the existing McpError handler below
+                raise McpError(ErrorData(code=-32001, message="MCP tool 'shell.run' returned no content"))
+
+            first_content_item = mcp_result[0]
+            
+            # FastMCP typically returns Pydantic models/dicts as JSON string in TextContent
+            if not hasattr(first_content_item, 'text') or not first_content_item.text:
+                logger.error("MCP tool 'shell.run' returned content item without text.")
+                raise McpError(ErrorData(code=-32002, message="MCP tool 'shell.run' returned content item without text"))
+
+            result_json_str = first_content_item.text
+            # This result_json_str should be the JSON representation of _ShellRunOutput from conftest.py
+            result_data = json.loads(result_json_str)
+
         return RunShellOutput(
-            ok=result.return_code == 0,
-            return_code=result.return_code,
-            stdout=result.stdout,
-            stderr=result.stderr,
+            ok=result_data.get("return_code") == 0,
+            return_code=result_data.get("return_code", -1),
+            stdout=result_data.get("stdout", ""),
+            stderr=result_data.get("stderr", ""),
             command_executed=command,
         )
     except McpError as e:

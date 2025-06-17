@@ -11,6 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `python -m pytest tests/integration/` - Run integration tests
 - `python -m pytest -k "test_name"` - Run specific test
 - `python -m pytest --tb=short` - Run tests with shorter traceback
+- `python -m pytest --log-cli-level=DEBUG` - Run tests with verbose application logging
 
 ### Code Quality
 - `python -m black .` - Format code with Black

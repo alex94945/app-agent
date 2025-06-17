@@ -7,8 +7,8 @@ from pathlib import Path
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from tools.shell_mcp_tools import run_shell
 from common.config import settings
+from agent.lsp_manager import get_lsp_manager
 
 logger = logging.getLogger(__name__)
 
@@ -21,51 +21,37 @@ class DiagnosticsInput(BaseModel):
 
 @tool(args_schema=DiagnosticsInput)
 async def get_diagnostics(file_path: Optional[str] = None, project_subdirectory: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Gets diagnostic information for a file using CLI tools (flake8 or tsc). Falls back to empty list if no issues."""
+    """
+    Gets diagnostic information (errors, warnings) for a specific file or the entire project
+    from the Language Server Protocol (LSP).
+    """
+    # For now, our LSP is TypeScript-only.
+    if file_path and not (file_path.endswith(".ts") or file_path.endswith(".tsx")):
+        logger.warning(f"get_diagnostics called on unsupported file type: {file_path}. Returning empty list.")
+        return []
+    # Simple guard to avoid running on non-TS/JS files for now
+    supported_suffixes = ['.ts', '.tsx', '.js', '.jsx']
+    if file_path and Path(file_path).suffix not in supported_suffixes:
+        logger.warning(f"get_diagnostics called on unsupported file type: {file_path}. Returning empty list.")
+        return []
     repo_dir = Path(settings.REPO_DIR)
     workspace_path = repo_dir / project_subdirectory if project_subdirectory else repo_dir
+    manager = await get_lsp_manager(str(workspace_path))
+    if not manager.client or not manager.client.is_running:
+        logger.info(f"LSP client for {workspace_path} not running, starting it for diagnostics.")
+        await manager.start()
 
-    diagnostics: List[Dict[str, Any]] = []
-    if not file_path:
-        return diagnostics  # Only single-file diagnostics supported in this lightweight path
-
-    rel_cwd = str(workspace_path.relative_to(repo_dir)) if workspace_path != repo_dir else "."
-    file_suffix = Path(file_path).suffix
-
-    if file_suffix == ".py":
-        cmd = f"flake8 {file_path}"
-    elif file_suffix == ".ts":
-        cmd = "tsc --noEmit --project tsconfig.json"
+    if file_path:
+        # Ensure file_path is relative to the workspace path for the LSP server
+        absolute_file_path = workspace_path / file_path
+        diagnostics = await manager.get_diagnostics(str(absolute_file_path))
     else:
-        # Unsupported extension
-        return diagnostics
+        diagnostics = await manager.get_all_diagnostics()
 
-    shell_out = await run_shell.ainvoke({
-        "command": cmd,
-        "working_directory_relative_to_repo": rel_cwd,
-    })
-
-    if shell_out.ok:
-        # No diagnostics
-        return diagnostics
-
-    output_lines = (shell_out.stdout or shell_out.stderr).splitlines()
-    for line in output_lines:
-        if file_suffix == ".py":
-            # flake8 format: path:line:col: code message
-            parts = line.split(":", 3)
-            if len(parts) >= 4:
-                diagnostics.append({
-                    "file": parts[0].strip(),
-                    "line": int(parts[1]),
-                    "column": int(parts[2]),
-                    "message": parts[3].strip(),
-                })
-        else:
-            # crude parse for tsc output lines containing the file name
-            if ".ts" in line:
-                diagnostics.append({"message": line.strip()})
-    return diagnostics
+    # The diagnostics from pygls are already in a serializable format (dicts)
+    # so we can return them directly.
+    logger.info(f"Retrieved {len(diagnostics)} diagnostics for {file_path or 'all files'} in {workspace_path}")
+    return [diag.model_dump() for diag in diagnostics]
 
 @tool(args_schema=DiagnosticsInput)
 async def diagnose(file_path: Optional[str] = None, project_subdirectory: Optional[str] = None) -> List[Dict[str, Any]]:

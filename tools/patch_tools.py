@@ -1,5 +1,6 @@
 import logging
 import uuid
+import json
 from typing import Dict, Any, Optional
 
 from langchain_core.tools import tool
@@ -7,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from common.config import settings
 from common.mcp_session import open_mcp_session
-from mcp.shared.exceptions import McpError
+from mcp.shared.exceptions import McpError, ErrorData
 
 logger = logging.getLogger(__name__)
 
@@ -67,18 +68,28 @@ async def apply_patch(file_path_in_repo: str, diff_content: str) -> ApplyPatchOu
 
             # 2. Apply the patch using git
             command = f"git apply --unsafe-paths --inaccurate-eof {temp_patch_filename}"
+            # The working directory for git should be the root of the repo
+            repo_root_str = str(settings.REPO_DIR.resolve())
+            repo_root_str = str(settings.REPO_DIR.resolve())
             try:
-                git_mcp_result = await session.call_tool("shell.run", {"command": command, "cwd": "."})
+                git_mcp_result = await session.call_tool("shell.run", {"command": command, "cwd": repo_root_str})
+
+                if git_mcp_result.isError or not git_mcp_result.content:
+                    error_text = git_mcp_result.content[0].text if git_mcp_result.content else "Unknown MCP error during git apply"
+                    raise McpError(ErrorData(code=-32000, message=error_text))
+
+                result_data = json.loads(git_mcp_result.content[0].text)
+
                 git_apply_details = ApplyPatchOutputDetails(
-                    stdout=git_mcp_result.stdout,
-                    stderr=git_mcp_result.stderr,
-                    return_code=git_mcp_result.return_code
+                    stdout=result_data.get("stdout", ""),
+                    stderr=result_data.get("stderr", ""),
+                    return_code=result_data.get("return_code", -1)
                 )
-                if git_mcp_result.return_code == 0:
+                if git_apply_details.return_code == 0:
                     final_ok = True
                     final_message = f"Patch applied successfully to '{file_path_in_repo}'."
                 else:
-                    final_message = f"'git apply' failed with return code {git_mcp_result.return_code}. See details."
+                    final_message = f"'git apply' failed with return code {git_apply_details.return_code}. See details."
                     logger.warning(final_message)
 
             except McpError as e:

@@ -80,9 +80,20 @@ graph TD
     *   The "brain" of the system.
     *   Maintains the state of the development task, including conversation history and tool results.
     *   Interprets user prompts using a large language model (LLM) to form a plan.
-    *   Executes the plan by making decisions on which tool to use from the `Toolbelt`.
+    *   Executes the plan by making decisions on which tool to use from the `Toolbelt`. This execution logic is increasingly handled by the `Agent Executor` submodule.
     *   Processes the output from tools to inform its next steps.
     *   Implements self-healing logic by interpreting diagnostics and build errors to attempt fixes.
+
+#### 3.3.1. Agent Executor (`agent/executor/`)
+
+This submodule is responsible for the robust execution of tool calls identified by the planner LLM. It enhances clarity, testability, and maintainability of the tool execution lifecycle.
+
+*   **Key Files & Responsibilities:**
+    *   **`agent/executor/parser.py` & `agent/executor/utils.py`**: Contain utility functions for parsing tool calls from LLM messages (e.g., `parse_tool_calls`) and pre-processing tool arguments (e.g., `maybe_inject_subdir`).
+    *   **`agent/executor/fix_cycle.py`**: Defines the `FixCycleTracker` dataclass, which manages the state of repeated tool call attempts, especially in self-healing scenarios (e.g., tracking linting/patching attempts).
+    *   **`agent/executor/output_handlers.py`**: Implements a registry-based system (`OUTPUT_HANDLERS`) for determining the success of a tool call (e.g., `is_tool_successful`) and formatting its output for the LLM, based on the tool's specific output type.
+    *   **`agent/executor/runner.py`**: Contains the `run_single_tool` function, which is responsible for invoking an individual tool from the `Toolbelt` with the prepared arguments.
+    *   **`agent/executor/executor.py`**: Houses the main refactored `tool_executor_step` logic. This orchestrates the tool execution process using the components above: parsing calls, running them via `run_single_tool`, tracking attempts with `FixCycleTracker`, and processing results with `output_handlers`.
 
 ### 3.4. Toolbelt
 

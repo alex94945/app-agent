@@ -66,6 +66,7 @@ class LspManager:
             # from the typescript-language-server.
         )
 
+        self.client.server_command = self.server_command
         # Register the diagnostics handler
         @self.client.feature('textDocument/publishDiagnostics')
         async def _publish_diagnostics(params):
