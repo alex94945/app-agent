@@ -53,3 +53,4 @@ digest.txt
 # Logs
 logs/
 *.log
+.tmp.apply_patch.*.patch

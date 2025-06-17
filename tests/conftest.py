@@ -14,6 +14,7 @@ import pytest
 import pytest_asyncio # Added for async fixtures
 import asyncio
 from typing import AsyncIterator, Optional, List
+from contextlib import asynccontextmanager
 
 from fastmcp import Client, FastMCP
 from pydantic import BaseModel, Field
@@ -25,6 +26,18 @@ IS_A_DIRECTORY_ERROR_CODE = -32011
 PERMISSION_DENIED_CODE = -32012
 NOT_A_DIRECTORY_CODE = -32013
 GENERIC_TOOL_ERROR_CODE = -32003 # Consistent with other tests
+
+
+# --- Helper Functions ---
+
+@asynccontextmanager
+async def mock_mcp_session_cm(client_to_yield: Client) -> AsyncIterator[Client]:
+    """
+    A reusable async context manager to mock common.mcp_session.open_mcp_session.
+
+    Yields the provided FastMCP client instance.
+    """
+    yield client_to_yield
 
 # --- Pydantic Schema for the server-side 'shell.run' tool output --- 
 
@@ -143,6 +156,75 @@ def build_file_io_tools_server() -> FastMCP:
 @pytest_asyncio.fixture
 async def file_io_client() -> AsyncIterator[Client]:
     server = build_file_io_tools_server()
+    async with Client(server) as c:
+        yield c
+
+
+# --- FastMCP Server for Patch Tools ---
+
+def build_patch_tools_server() -> FastMCP:
+    """Builds a FastMCP server with the tools needed for apply_patch."""
+    server = FastMCP("PatchToolsTestServer")
+
+    # --- Tool Implementations (reused from other builders for consistency) ---
+
+    @server.tool(name="fs.write")
+    async def actual_fs_write(path: str, content: str) -> None:
+        try:
+            target_path = Path(path)
+            await asyncio.to_thread(target_path.parent.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(target_path.write_text, content, encoding='utf-8')
+            return None
+        except IsADirectoryError as e:
+            raise McpError(ErrorData(code=IS_A_DIRECTORY_ERROR_CODE, message=f"Error writing file {path}: {str(e)}"))
+        except Exception as e:
+            raise McpError(ErrorData(code=GENERIC_TOOL_ERROR_CODE, message=f"Error writing file {path}: {str(e)}"))
+
+    @server.tool(name="fs.remove")
+    async def actual_fs_remove(path: str) -> None:
+        try:
+            await asyncio.to_thread(Path(path).unlink)
+            return None
+        except FileNotFoundError:
+            # This is not a critical error for cleanup, but we raise for testability
+            raise McpError(ErrorData(code=RESOURCE_NOT_FOUND_CODE, message=f"File not found for removal: {path}"))
+        except Exception as e:
+            raise McpError(ErrorData(code=GENERIC_TOOL_ERROR_CODE, message=f"Error removing file {path}: {str(e)}"))
+
+    @server.tool(name="shell.run")
+    async def actual_shell_run(command: str, cwd: Optional[str] = None) -> _ShellRunOutput:
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd
+            )
+            stdout_bytes, stderr_bytes = await proc.communicate()
+            
+            stdout = stdout_bytes.decode().strip() if stdout_bytes else ""
+            stderr = stderr_bytes.decode().strip() if stderr_bytes else ""
+            return_code = proc.returncode if proc.returncode is not None else -1
+
+            return _ShellRunOutput(
+                stdout=stdout,
+                stderr=stderr,
+                return_code=return_code
+            )
+        except Exception as e:
+            return _ShellRunOutput(
+                stdout="",
+                stderr=f"Error in actual_shell_run: {str(e)}",
+                return_code=-1
+            )
+
+    return server
+
+# --- Pytest Fixture for the Patch Client ---
+
+@pytest_asyncio.fixture
+async def patch_client() -> AsyncIterator[Client]:
+    server = build_patch_tools_server()
     async with Client(server) as c:
         yield c
 
