@@ -16,6 +16,7 @@ langchain-chroma~=0.1     # As suggested by deprecation warning
 
 ######## Toolbelt ########
 mcp~=1.9
+fastmcp~=2.8
 chromadb~=0.6.3                    # Using the more recent stable version line
 qdrant-client~=1.14.2             # 1.15 wheel for cp313 manylinux
 lsprotocol==2025.0.0rc1           # Protocol for pygls, pinned for stability

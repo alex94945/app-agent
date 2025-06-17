@@ -7,7 +7,7 @@ from langchain_core.tools import tool
 
 # Correct imports based on official MCP documentation
 from common.mcp_session import open_mcp_session
-from mcp.shared.exceptions import McpError, ErrorData
+from fastmcp.exceptions import ToolError
 from common.config import settings
 
 logger = logging.getLogger(__name__)
@@ -41,13 +41,30 @@ async def read_file(path_in_repo: str) -> str:
         # We must resolve the path to be absolute for the mock server.
         async with open_mcp_session() as session:
             content = await session.call_tool("fs.read", {"path": str(Path(settings.REPO_DIR) / path_in_repo)})
-            return content
-    except McpError as e:
-        error_message = f"MCP Error reading file '{path_in_repo}': {e}"
-        logger.error(error_message)
-        return error_message
+            logger.debug(f"read_file: session.call_tool returned: {content!r} (type: {type(content)})")
+            if content and isinstance(content, list) and len(content) > 0 and hasattr(content[0], 'text'):
+                # Assuming TextContent or a similar structure with a .text attribute
+                # Based on docs, call_tool returns List[mcp.types.TextContent | mcp.types.ImageContent | ...]
+                # For fs.read, we expect a single TextContent.
+                # The actual type from fastmcp might be mcp.sdk.types.Content (which has .text)
+                # or mcp.types.TextContent (also has .text)
+                processed_content = content[0].text
+                logger.debug(f"read_file: processed content to string: {processed_content!r}")
+                return processed_content
+            elif isinstance(content, str): # Should not happen based on docs, but as a fallback
+                logger.warning(f"read_file: session.call_tool unexpectedly returned str, not List[Content]. Using as is.")
+                return content
+            else:
+                logger.warning(f"read_file: session.call_tool returned unexpected content format: {content!r}. Returning empty string.")
+                return ""
+    except ToolError as e:
+        # FastMCP client wraps server-side McpError in a ToolError.
+        # We format this to match the expected test assertion.
+        logger.error(f"MCP ToolError reading file '{path_in_repo}': {e}")
+        return f"MCP Error reading file '{path_in_repo}': {e}"
     except Exception as e:
-        error_message = f"Failed to execute read_file tool for '{path_in_repo}': {e}"
+        # Catch any other unexpected errors.
+        error_message = f"Unexpected error in read_file tool for '{path_in_repo}': {e}"
         logger.error(error_message, exc_info=True)
         return error_message
 
@@ -65,11 +82,21 @@ async def write_file(path_in_repo: str, content: str) -> WriteFileOutput:
             success_message = f"Successfully wrote {len(content)} bytes to '{path_in_repo}'."
             logger.info(success_message)
             return WriteFileOutput(ok=True, path=path_in_repo, message=success_message)
-    except McpError as e:
-        error_message = f"MCP Error writing file '{path_in_repo}': {e}"
-        logger.error(error_message)
-        return WriteFileOutput(ok=False, path=path_in_repo, message=error_message)
+    except ToolError as e:
+        # FastMCP client wraps server-side McpError in a ToolError.
+        # We format this to match the expected test assertion.
+        logger.error(f"MCP ToolError writing file '{path_in_repo}': {e}")
+        return WriteFileOutput(
+            ok=False,
+            path=path_in_repo,
+            message=f"MCP Error writing file '{path_in_repo}': {e}",
+        )
     except Exception as e:
-        error_message = f"Failed to execute write_file tool for '{path_in_repo}': {e}"
+        # Catch any other unexpected errors.
+        error_message = f"Unexpected error in write_file tool for '{path_in_repo}': {e}"
         logger.error(error_message, exc_info=True)
-        return WriteFileOutput(ok=False, path=path_in_repo, message=error_message)
+        return WriteFileOutput(
+            ok=False,
+            path=path_in_repo,
+            message=error_message,
+        )

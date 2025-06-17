@@ -1,97 +1,89 @@
-from unittest.mock import patch, MagicMock, AsyncMock
-from pathlib import Path
 import pytest
+import asyncio
+from pathlib import Path
+from unittest.mock import patch
+from contextlib import asynccontextmanager
 
 from tools.file_io_mcp_tools import read_file, write_file, WriteFileOutput
-from mcp.shared.exceptions import McpError, ErrorData
+from mcp.shared.exceptions import McpError
+
+# Helper async context manager to mock open_mcp_session
+@asynccontextmanager
+async def mock_mcp_session_cm(client_to_yield):
+    """Yields the provided client instance within an async context."""
+    yield client_to_yield
 
 @pytest.mark.asyncio
-@patch('mcp.ClientSession')
-@patch('mcp.client.streamable_http.streamablehttp_client')
-@patch('common.config.settings')
-async def test_read_file_success(mock_mcp_client_session, mock_streamable_http, mock_actual_settings):
-    """Tests that read_file successfully calls the MCP client and returns content."""
-    # 1. Setup Mocks
-    mock_actual_settings.REPO_DIR = Path('.')
-    mock_reader, mock_writer = AsyncMock(), AsyncMock()
-    mock_streamable_http.return_value.__aenter__.return_value = (mock_reader, mock_writer, None)
-    
-    mock_session_instance = AsyncMock()
-    mock_session_instance.call_tool.return_value = "Hello, world!"
-    mock_mcp_client_session.return_value.__aenter__.return_value = mock_session_instance
-    
-    # 2. Call Tool
-    result = await read_file.ainvoke({"path_in_repo": "test.txt"})
+async def test_read_file_success(file_io_client, tmp_path, monkeypatch):
+    """Tests that read_file successfully reads content using the file_io_client."""
+    # 1. Setup
+    test_file = tmp_path / "test_read.txt"
+    expected_content = "Hello from fastmcp!"
+    await asyncio.to_thread(test_file.write_text, expected_content)
+    monkeypatch.setattr('common.config.settings.REPO_DIR', tmp_path)
+
+    # 2. Call Tool via .ainvoke()
+    with patch('tools.file_io_mcp_tools.open_mcp_session', return_value=mock_mcp_session_cm(file_io_client)):
+        # read_file returns a string, which LangChain wraps. We assert against the raw string.
+        result = await read_file.ainvoke({"path_in_repo": "test_read.txt"})
     
     # 3. Assertions
-    mock_session_instance.call_tool.assert_awaited_once_with("fs.read", {"path": "test.txt"})
-    assert result == "Hello, world!"
+    assert result == expected_content
 
 @pytest.mark.asyncio
-@patch('mcp.ClientSession')
-@patch('common.mcp_session.streamablehttp_client')
-async def test_read_file_mcp_error(mock_http_client, mock_client_session):
-    """Tests that read_file handles an MCPError gracefully."""
-    # 1. Setup Mock
-    mock_reader, mock_writer = AsyncMock(), AsyncMock()
-    mock_http_client.return_value.__aenter__.return_value = (mock_reader, mock_writer, None)
-    
-    mock_session_instance = AsyncMock()
-    error_data = ErrorData(code=-32001, message="File not found")
-    mock_session_instance.call_tool.side_effect = McpError(error_data)
-    mock_client_session.return_value.__aenter__.return_value = mock_session_instance
-    
-    # 2. Call Tool
-    result = await read_file.ainvoke({"path_in_repo": "not_found.txt"})
+async def test_read_file_mcp_error_not_found(file_io_client, tmp_path, monkeypatch):
+    """Tests that read_file handles McpError (FileNotFound) from file_io_client."""
+    # 1. Setup
+    monkeypatch.setattr('common.config.settings.REPO_DIR', tmp_path)
+
+    # 2. Call Tool via .ainvoke()
+    with patch('tools.file_io_mcp_tools.open_mcp_session', return_value=mock_mcp_session_cm(file_io_client)):
+        # The tool returns a formatted error string.
+        result = await read_file.ainvoke({"path_in_repo": "non_existent_file.txt"})
     
     # 3. Assertions
-    assert "MCP Error reading file" in result
-    assert "File not found" in result
+    assert isinstance(result, str)
+    # The tool catches the ToolError and formats a user-friendly string.
+    assert 'MCP Error' in result
+    assert 'File not found' in result
 
 @pytest.mark.asyncio
-@patch('mcp.ClientSession')
-@patch('common.mcp_session.streamablehttp_client')
-async def test_write_file_success(mock_http_client, mock_client_session):
-    """Tests that write_file successfully calls the MCP client."""
-    # 1. Setup Mock
-    mock_reader, mock_writer = AsyncMock(), AsyncMock()
-    mock_http_client.return_value.__aenter__.return_value = (mock_reader, mock_writer, None)
-    
-    mock_session_instance = AsyncMock()
-    mock_session_instance.call_tool.return_value = None  # fs.write returns nothing on success
-    mock_client_session.return_value.__aenter__.return_value = mock_session_instance
-    
-    # 2. Call Tool
-    file_content = "This is a test."
-    result = await write_file.ainvoke({"path_in_repo": "new_file.txt", "content": file_content})
+async def test_write_file_success(file_io_client, tmp_path):
+    """Tests that write_file successfully writes content using the file_io_client."""
+    # 1. Setup
+    output_file = tmp_path / "test_write.txt"
+    content_to_write = "Content written by fastmcp!"
+
+    # 2. Call Tool via .ainvoke()
+    with patch('tools.file_io_mcp_tools.open_mcp_session', return_value=mock_mcp_session_cm(file_io_client)):
+        # write_file returns a Pydantic model, which is passed through by .ainvoke()
+        result = await write_file.ainvoke({"path_in_repo": str(output_file), "content": content_to_write})
     
     # 3. Assertions
-    mock_session_instance.call_tool.assert_awaited_once_with(
-        "fs.write",
-        {"path": "new_file.txt", "content": file_content}
-    )
-    assert result.ok is True
     assert isinstance(result, WriteFileOutput)
-    assert "Successfully wrote" in result.message
+    assert result.ok is True
+    assert result.path == str(output_file)
+    assert f"Successfully wrote {len(content_to_write)} bytes" in result.message
+    
+    # Verify file content on disk
+    assert await asyncio.to_thread(output_file.read_text) == content_to_write
 
 @pytest.mark.asyncio
-@patch('mcp.ClientSession')
-@patch('common.mcp_session.streamablehttp_client')
-async def test_write_file_mcp_error(mock_http_client, mock_client_session):
-    """Tests that write_file handles an MCPError gracefully."""
-    # 1. Setup Mock
-    mock_reader, mock_writer = AsyncMock(), AsyncMock()
-    mock_http_client.return_value.__aenter__.return_value = (mock_reader, mock_writer, None)
-    
-    mock_session_instance = AsyncMock()
-    error_data = ErrorData(code=-32002, message="Permission denied")
-    mock_session_instance.call_tool.side_effect = McpError(error_data)
-    mock_client_session.return_value.__aenter__.return_value = mock_session_instance
-    
-    # 2. Call Tool
-    result = await write_file.ainvoke({"path_in_repo": "protected/file.txt", "content": "test"})
-    
+async def test_write_file_mcp_error_is_a_directory(file_io_client, tmp_path):
+    """Tests write_file handling McpError when trying to write to a directory."""
+    # 1. Setup
+    target_dir = tmp_path / "a_directory"
+    await asyncio.to_thread(target_dir.mkdir)
+
+    # 2. Call Tool via .ainvoke()
+    with patch('tools.file_io_mcp_tools.open_mcp_session', return_value=mock_mcp_session_cm(file_io_client)):
+        result = await write_file.ainvoke({"path_in_repo": str(target_dir), "content": "test content"})
+
     # 3. Assertions
+    assert isinstance(result, WriteFileOutput)
+    assert isinstance(result, WriteFileOutput)
     assert result.ok is False
-    assert "MCP Error writing file" in result.message
-    assert "Permission denied" in result.message
+    assert result.path == str(target_dir)
+    # The tool catches the ToolError and formats a user-friendly string.
+    assert 'MCP Error' in result.message
+    assert 'Is a directory' in result.message
