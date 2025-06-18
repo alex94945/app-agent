@@ -1,31 +1,38 @@
-# /agent/lsp_manager.py
-
 import asyncio
 import logging
 import os
 import shutil
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from pathlib import Path
 
-from pygls.lsp.client import BaseLanguageClient
+from pygls.lsp.client import LanguageClient
 from pygls.protocol import LanguageServerProtocol
+from pygls import uris
 from lsprotocol import types as lsp_types
 
 logger = logging.getLogger(__name__)
+
+
+def _norm(p: str | Path) -> str:
+    """Return a canonical absolute path with symlinks resolved."""
+    return str(Path(p).resolve())
+
 
 class LspManager:
     """Manages a single Language Server Protocol (LSP) client instance for the workspace."""
 
     def __init__(self, workspace_path: str, server_command: Optional[List[str]] = None):
         self.workspace_path = workspace_path
-        self.client = None
-        self._process = None
-        self._diagnostics = {}
+        self._diagnostics: Dict[str, List[lsp_types.Diagnostic]] = {}
+        self._diagnostics_lock = asyncio.Lock()
+        self._diagnostics_events: Dict[str, asyncio.Event] = {}
+        self._diagnostics_cache: Dict[str, List[lsp_types.Diagnostic]] = {}
+        self._stderr_drain_task: Optional[asyncio.Task] = None
+        # self._tsconfig_mtime: Optional[float] = None # For tsconfig.json change detection -> Duplicate, see line 54
 
-        if server_command is None:
-            self.server_command = ['typescript-language-server', '--stdio']
-        else:
-            self.server_command = server_command
+        # Respect server_command argument, default if None
+        self.server_command = server_command or ['typescript-language-server', '--stdio']
+        logger.info(f"Using server_command: {' '.join(self.server_command)}")
 
         if not self.server_command or not self.server_command[0]:
             raise ValueError("server_command must be a non-empty list with the executable as the first element.")
@@ -36,132 +43,119 @@ class LspManager:
                 f"LSP server executable '{self.server_command[0]}' not found in PATH. "
                 f"Please ensure it is installed and accessible."
             )
-        # Use the absolute path found by shutil.which
-        self.server_command[0] = executable_path
-        self._diagnostics_lock = asyncio.Lock()
-        self._stderr_drain_task: Optional[asyncio.Task] = None
-        self._io_task: Optional[asyncio.Task] = None
-        self._tsconfig_path: Optional[Path] = None
-        self._tsconfig_mtime: Optional[float] = None
+        self.server_command[0] = executable_path  # Use absolute path
+
+        self.client = LanguageClient(
+            name="CascadeLspClient",
+            version="0.1",
+            protocol_cls=LanguageServerProtocol, # Use imported LanguageServerProtocol from pygls.protocol
+        )
+
+        # Register the diagnostics handler once during initialization
+        @self.client.feature(lsp_types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+        async def _publish_diagnostics(params: lsp_types.PublishDiagnosticsParams):
+            uri = params.uri
+            fs_key = _norm(uris.to_fs_path(uri))
+            logger.debug(f"Storing diags for URI {uri} under normalized path key: {fs_key} and URI key: {uri}")
+            raw_diagnostics = params.diagnostics
+            logger.info(f"_diagnostics_handler: Received diagnostics for URI '{uri}', version {params.version}, {len(params.diagnostics)} items: {params.diagnostics}")
+            # Filter to ensure only actual Diagnostic objects are stored
+            valid_diagnostics = [d for d in raw_diagnostics if isinstance(d, lsp_types.Diagnostic)]
+            if len(valid_diagnostics) < len(raw_diagnostics):
+                invalid_items_count = len(raw_diagnostics) - len(valid_diagnostics)
+                logger.warning(
+                    f"Filtered out {invalid_items_count} non-Diagnostic items from "
+                    f"textDocument/publishDiagnostics for {uri}. Original count: {len(raw_diagnostics)}"
+                )
+            async with self._diagnostics_lock:
+                self._diagnostics[fs_key] = valid_diagnostics      # Store by normalized path
+                self._diagnostics[uri] = valid_diagnostics         # Also store by original URI
+                self._diagnostics_cache[uri] = params.diagnostics # This cache is keyed by URI
+            logger.info(f"Received and stored {len(valid_diagnostics)} valid diagnostics for fs_key: {fs_key}, uri: {uri}")
+
+            # Notify waiters that diagnostics for this file have arrived
+            if uri in self._diagnostics_events: # Use uri
+                logger.info(f"_diagnostics_handler: Setting event for URI {uri}")
+                self._diagnostics_events[uri].set()
+
+        # Removed duplicate _tsconfig_mtime declaration
 
     async def start(self):
         """Starts the language server process and initializes the client."""
-        if self.client and self.client.is_running:
+        if not self.client.stopped:
             logger.info("LSP client is already running.")
             return
 
-        logger.info("Starting typescript-language-server...")
-        self._process = await asyncio.create_subprocess_exec(
-            *self.server_command,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
+        logger.info(f"Starting LSP server with command: {' '.join(self.server_command)}...")
+        try:
+            workspace_uri = uris.from_fs_path(self.workspace_path)
+            workspace_folders_list = [
+                lsp_types.WorkspaceFolder(uri=workspace_uri, name=Path(self.workspace_path).name)
+            ]
+            initialization_opts = {
+                "tsserver": {
+                    "logDirectory": "/tmp",  # Server will create tsserver.<PID>.log here
+                    "logVerbosity": "verbose"
+                }
+            }
 
-        self.client = BaseLanguageClient(
-            name="app-agent-client",
-            version="0.1.0",
-            protocol_cls=LanguageServerProtocol,
-            # The following converters are needed to handle some non-standard responses
-            # from the typescript-language-server.
-        )
+            logger.info(f"Attempting to start LSP server with command: {' '.join(self.server_command)}, cwd: {self.workspace_path}, root_uri: {workspace_uri}, init_options: {initialization_opts}")
+            # self.server_command[0] is the executable, self.server_command[1:] are the args.
+            await self.client.start(
+                self.server_command[0], 
+                *self.server_command[1:], 
+                cwd=str(self.workspace_path), # Ensure cwd is a string
+                root_uri=workspace_uri,
+                workspace_folders=workspace_folders_list,
+                initialization_options=initialization_opts
+            )
+            logger.info("LSP client start command issued. Waiting for initialization...")
+            await self.client.initialized() # Wait for server to confirm initialization
+            logger.info(f"LSP client started and initialized for workspace: {workspace_uri}")
 
-        self.client.server_command = self.server_command
-        # Register the diagnostics handler
-        @self.client.feature('textDocument/publishDiagnostics')
-        async def _publish_diagnostics(params):
-            uri = params.uri
-            diagnostics = params.diagnostics
-            async with self._diagnostics_lock:
-                self._diagnostics[uri] = diagnostics
-            logger.info(f"Received diagnostics for {uri}: {len(diagnostics)} items")
+            if self.client.process and self.client.process.stderr:
+                logger.info("Starting stderr drain task for LSP server process.")
+                self._stderr_drain_task = asyncio.create_task(
+                    self._drain_stderr(), 
+                    name=f"lsp_stderr_drain_{Path(self.workspace_path).name}"
+                )
+            else:
+                logger.warning("LSP server process or stderr stream not available after start, cannot drain stderr.")
+            
+            self._update_tsconfig_mtime() # Initial check and store of tsconfig mtime
 
-        # Start the main IO loop for the protocol
-        # self.client.protocol is the LanguageServerProtocol instance
-        # self._process.stdout is the reader, self._process.stdin is the writer for the server
-        await self.client.start_io(self._process.stdout, self._process.stdin)
-
-        # Initialize the server
-        root_uri = f'file://{self.workspace_path}'
-        params = lsp_types.InitializeParams(
-            process_id=self._process.pid,
-            root_uri=root_uri,
-            capabilities=lsp_types.ClientCapabilities()  # Basic capabilities
-        )
-        await self.client.initialize(params)
-        logger.info(f"LSP client initialized for workspace: {root_uri}")
-
-        if self._process.stderr:
-            self._stderr_drain_task = asyncio.create_task(self._drain_stream(self._process.stderr, logging.ERROR))
-        else:
-            logger.warning("LSP server process has no stderr stream to drain.")
-
-        self._update_tsconfig_mtime() # Initial check and store of tsconfig mtime
+        except Exception as e:
+            logger.error(f"Failed to start LSP client: {e}")
+            # Re-raise to ensure the caller knows the start failed.
+            raise
 
     async def stop(self):
-        """Stops the language server client and process."""
-        # No separate IO task after start_io; ensure client.stop() later
-        if False and self._io_task:
-            logger.info("Cancelling LSP IO task...")
-            self._io_task.cancel()
-            try:
-                await self._io_task
-            except asyncio.CancelledError:
-                logger.info("LSP IO task cancelled successfully.")
-            except Exception as e:
-                logger.error(f"Error during LSP IO task cancellation: {e}")
-        self._io_task = None  # kept for backward compatibility
+        """Stops the language server client."""
+        if not (self.client and not self.client.stopped):
+            logger.info("LSP client is not running or not initialized.")
+            return
 
         if self._stderr_drain_task and not self._stderr_drain_task.done():
-            logger.info("Cancelling LSP stderr drain task...")
+            logger.info("Cancelling LSP stderr drain task.")
             self._stderr_drain_task.cancel()
             try:
                 await self._stderr_drain_task
             except asyncio.CancelledError:
-                logger.info("LSP stderr drain task cancelled successfully.")
+                logger.info("LSP stderr drain task successfully cancelled during stop.")
             except Exception as e:
-                logger.error(f"Error during LSP stderr drain task cancellation: {e}")
-        self._stderr_drain_task = None
-
-        if self.client and self.client.is_running:
-            logger.info("Stopping LSP client (sending shutdown/exit)...")
+                logger.error(f"Exception while awaiting cancelled stderr drain task during stop: {e}", exc_info=True)
+            self._stderr_drain_task = None
+        
+        if self.client and not self.client.stopped:
+            logger.info("Stopping LSP client...")
             try:
-                if self.client.protocol.initialized:
-                    await self.client.shutdown()
-                await self.client.exit()
+                await self.client.stop()
+                logger.info("LSP client stopped.")
             except Exception as e:
-                logger.error(f"Error during LSP client shutdown/exit: {e}")
-            await self.client.stop()
-        self.client = None # Clear the client
-
-        if self._process and self._process.returncode is None:
-            logger.info("Terminating LSP server process...")
-            logger.info(f"Attempting to terminate LSP server process (PID: {self._process.pid})...")
-            self._process.terminate()
-            try:
-                await asyncio.wait_for(self._process.wait(), timeout=5.0)
-                logger.info(f"LSP server process (PID: {self._process.pid}) terminated gracefully.")
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"LSP server process (PID: {self._process.pid}) did not terminate within 5 seconds. Attempting to kill..."
-                )
-                self._process.kill()
-                try:
-                    await asyncio.wait_for(self._process.wait(), timeout=2.0) # Wait for kill to complete
-                    logger.info(f"LSP server process (PID: {self._process.pid}) killed successfully.")
-                except asyncio.TimeoutError:
-                    logger.error(f"LSP server process (PID: {self._process.pid}) did not stop even after kill. It might be orphaned.")
-            except Exception as e:
-                logger.error(f"Error during LSP server process termination: {e}")
-            finally:
-                self._process = None
-        if self._stderr_drain_task and not self._stderr_drain_task.done():
-            self._stderr_drain_task.cancel()
-            try:
-                await self._stderr_drain_task
-            except asyncio.CancelledError:
-                logger.info("Stderr drain task cancelled.")
-        logger.info("LSP client and server stopped.")
+                logger.error(f"Error stopping LSP client: {e}", exc_info=True)
+        else:
+            logger.info("LSP client already stopped or not initialized during LspManager stop.")
+        logger.info("LSP Manager stopped.")
 
     async def restart(self):
         """Restarts the language server."""
@@ -169,37 +163,164 @@ class LspManager:
         await self.stop()
         await self.start()
 
-    async def get_definition(self, file_path: str, line: int, character: int):
+    async def get_definition(self, file_path: str, line: int, character: int) -> Any:
         """Requests a go-to-definition for a symbol at a given location."""
-        if not self.client or not self.client.is_running:
+        if not self.client or self.client.stopped:
             raise ConnectionError("LSP client is not running.")
 
-        uri = f'file://{file_path}'
-        params = {'textDocument': {'uri': uri}, 'position': {'line': line, 'character': character}}
-        return await self.client.lsp.send_request('textDocument/definition', params)
+        uri = uris.from_fs_path(file_path)
+        params = lsp_types.DefinitionParams(
+            text_document=lsp_types.TextDocumentIdentifier(uri=uri),
+            position=lsp_types.Position(line=line, character=character)
+        )
+        return await self.client.lsp.send_request(lsp_types.TEXT_DOCUMENT_DEFINITION, params)
 
-    async def get_hover(self, file_path: str, line: int, character: int):
+    async def get_hover(self, file_path: str, line: int, character: int) -> Any:
         """Requests hover information for a symbol at a given location."""
-        if not self.client or not self.client.is_running:
+        if not self.client or self.client.stopped:
             raise ConnectionError("LSP client is not running.")
 
-        uri = f'file://{file_path}'
-        params = {'textDocument': {'uri': uri}, 'position': {'line': line, 'character': character}}
-        return await self.client.lsp.send_request('textDocument/hover', params)
+        uri = uris.from_fs_path(file_path)
+        params = lsp_types.HoverParams(
+            text_document=lsp_types.TextDocumentIdentifier(uri=uri),
+            position=lsp_types.Position(line=line, character=character)
+        )
+        return await self.client.lsp.send_request(lsp_types.TEXT_DOCUMENT_HOVER, params)
+
+    async def get_cached_diagnostics(self, file_path: str) -> list[lsp_types.Diagnostic]:
+        uri = uris.from_fs_path(_norm(file_path)) # Use _norm for consistency
+        diagnostics = self._diagnostics_cache.get(uri, [])
+        logger.info(f"get_cached_diagnostics: Retrieving for URI '{uri}' (file: {file_path}). Found {len(diagnostics)} diagnostics: {diagnostics}")
+        return diagnostics
 
     async def get_diagnostics(self, file_path: str) -> list:
         """Retrieves diagnostic information (errors, warnings) for a file."""
-        uri = f'file://{file_path}'
+        fs_key = _norm(file_path)
+        uri_key = uris.from_fs_path(fs_key) # Use normalized path to create the URI key for lookup
+        logger.debug(f"Looking up diagnostics for original path {file_path} using normalized fs_key: {fs_key} and uri_key: {uri_key}")
         async with self._diagnostics_lock:
-            return self._diagnostics.get(uri, [])
+            # Try normalized path first, then URI, then default to empty list
+            raw_diags = self._diagnostics.get(fs_key) or self._diagnostics.get(uri_key) or []
+            valid_diags = [d for d in raw_diags if isinstance(d, lsp_types.Diagnostic)]
+            if len(valid_diags) < len(raw_diags) and raw_diags: # only warn if raw_diags was not empty
+                logger.warning(f"Filtered out non-Diagnostic items from get_diagnostics for {file_path}. Original count: {len(raw_diags)}")
+            logger.debug(f"Retrieved {len(valid_diags)} diagnostics for {file_path} (keys: {fs_key}, {uri_key}): {valid_diags}")
+            return valid_diags
 
     async def get_all_diagnostics(self) -> list:
         """Retrieves all diagnostic information stored in the manager, flattened into a single list."""
         all_diags = []
         async with self._diagnostics_lock:
-            for diags in self._diagnostics.values():
-                all_diags.extend(diags)
+            for raw_diags_list in self._diagnostics.values():
+                # Ensure only Diagnostic objects are added
+                valid_diags_list = [d for d in raw_diags_list if isinstance(d, lsp_types.Diagnostic)]
+                if len(valid_diags_list) < len(raw_diags_list):
+                    logger.warning(f"Filtered out non-Diagnostic items during get_all_diagnostics aggregation. Original count for list: {len(raw_diags_list)}")
+                all_diags.extend(valid_diags_list)
         return all_diags
+
+    async def wait_for_diagnostics(self, file_path: str, timeout: float = 5.0) -> None:
+        uri = uris.from_fs_path(_norm(file_path)) # Use _norm for consistency
+        logger.info(f"wait_for_diagnostics: Waiting for diagnostics for URI '{uri}' (file: {file_path}) with timeout {timeout}s")
+        """Waits for diagnostics to be published for a specific file."""
+        # fs_path_key = str(Path(file_path).resolve()) # Normalize input path. URI is used for events.
+        event = self._diagnostics_events.setdefault(uri, asyncio.Event())
+        # Clear the event first, in case it was set by a previous, stale diagnostic notification
+        event.clear()
+
+        try:
+            # logger.info(f"Waiting up to {timeout}s for diagnostics for {fs_path_key}...") # Already logged with URI above
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            logger.info(f"wait_for_diagnostics: Event received for {uri}")
+            logger.info(f"wait_for_diagnostics: Current diagnostics cache for {uri}: {self._diagnostics_cache.get(uri)}")
+        except asyncio.TimeoutError:
+            logger.warning(f"wait_for_diagnostics: Timeout waiting for diagnostics for {uri}. Cache content: {self._diagnostics_cache.get(uri)}")
+
+    async def _drain_stderr(self):
+        """Drain and log the LSP server's stderr stream."""
+        process = self.client.process # Use public attribute
+        if not (process and process.stderr):
+            logger.warning(f"_drain_stderr: LSP server process or stderr stream not available for {self.workspace_path}.")
+            return
+
+        logger.info(f"Starting LSP stderr drain task for {self.workspace_path}.")
+        try:
+            while True:
+                # Check if the process is still running before attempting to read
+                if process.returncode is not None:
+                    logger.info(f"LSP server process for {self.workspace_path} exited with code {process.returncode}. Stopping stderr drain.")
+                    break
+
+                try:
+                    line = await asyncio.wait_for(process.stderr.readline(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    # Timeout waiting for line, check process status and continue if running
+                    if process.returncode is None:
+                        continue # Still running, try reading again
+                    else:
+                        logger.info(f"LSP server process for {self.workspace_path} exited (during readline timeout) with code {process.returncode}. Stopping stderr drain.")
+                        break # Process exited
+                
+                if line:
+                    # Using DEBUG for potentially verbose stderr, ERROR was too high
+                    logger.debug(f"LSP Server STDERR ({Path(self.workspace_path).name}): {line.decode().strip()}")
+                else:
+                    # End of stream (stderr closed by server or process terminated)
+                    if process.returncode is None:
+                        # Stream closed but process might still be running (unlikely for stderr)
+                        logger.info(f"LSP server stderr stream for {self.workspace_path} ended (EOF), but process still running. Checking again...")
+                        await asyncio.sleep(0.1) # Brief pause before re-checking process status
+                        if process.returncode is None:
+                            logger.warning(f"LSP server stderr for {self.workspace_path} EOF but process alive. Stopping drain.")
+                        else:
+                            logger.info(f"LSP server process for {self.workspace_path} exited (after EOF) with code {process.returncode}. Stopping stderr drain.")
+                        break
+                    else:
+                        logger.info(f"LSP server process for {self.workspace_path} exited. Stopping stderr drain (EOF).")
+                        break
+        except asyncio.CancelledError:
+            logger.info(f"LSP stderr drain task for {self.workspace_path} cancelled.")
+            # Do not re-raise CancelledError, allow task to terminate gracefully
+        except Exception as e:
+            logger.error(f"Exception in LSP stderr drain task for {self.workspace_path}: {e}", exc_info=True)
+        finally:
+            logger.info(f"LSP stderr drain task finished for {self.workspace_path}.")
+
+    async def open_document(self, file_path: str) -> None:
+        logger.info(f"open_document: Called for file_path: {file_path}")
+        """Sends a textDocument/didOpen notification to the server."""
+        if not self.client or self.client.stopped:
+            logger.warning("Cannot open document, client is not running.")
+            return
+
+        uri = uris.from_fs_path(str(Path(file_path).resolve())) # Convert normalized fs path to URI
+        try:
+            # Use utf-8 encoding for safety
+            with open(file_path, 'r', encoding='utf-8') as f:
+                text = f.read()
+        except Exception as e:
+            logger.error(f"Failed to read file {file_path} for didOpen: {e}")
+            return
+
+        # Simple mapping for languageId
+        language_id = "typescript"
+        if file_path.endswith(".tsx"):
+            language_id = "typescriptreact"
+        elif file_path.endswith(".js"):
+            language_id = "javascript"
+        elif file_path.endswith(".jsx"):
+            language_id = "javascriptreact"
+
+        params = lsp_types.DidOpenTextDocumentParams(
+            text_document=lsp_types.TextDocumentItem(
+                uri=uri,
+                language_id=language_id,
+                version=1, # Initial version
+                text=text
+            )
+        )
+        self.client.text_document_did_open(params)
+        logger.info(f"Sent textDocument/didOpen for {uri}")
 
     def _update_tsconfig_mtime(self):
         """Updates the stored modification time of tsconfig.json if it exists."""

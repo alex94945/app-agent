@@ -105,10 +105,14 @@ async def tool_executor_step(state: AgentState) -> dict:
     tool_messages: list[ToolMessage] = []
     logger.debug("Parsed %s tool calls to execute.", len(parsed_tool_calls))
     
-    # Initialize FixCycleTracker from state
-    tracker_state_from_input = state.get('fix_cycle_tracker_state')
-    fix_tracker = FixCycleTracker.from_state(tracker_state_from_input if tracker_state_from_input is not None else {})
-    logger.info(f"FixCycleTracker initialized. Current state: {fix_tracker.get_current_fix_state()}")
+    # Retrieve FixCycleTracker from state, or initialize if not present
+    tracker_state = state.get("fix_cycle_tracker_state")  # Load using the consistent key
+    if tracker_state:
+        tracker = FixCycleTracker.from_state(tracker_state)
+        logger.info(f"FixCycleTracker loaded from state. Current state: {tracker.to_state()}")
+    else:
+        tracker = FixCycleTracker()
+        logger.info(f"FixCycleTracker initialized fresh. Current state: {tracker.to_state()}")
 
     additional_state_updates: dict = {}
 
@@ -142,8 +146,26 @@ async def tool_executor_step(state: AgentState) -> dict:
         tool_messages.append(ToolMessage(content=formatted_output_content, tool_call_id=tool_call_id))
         logger.debug(f"Tool '{tool_name}' (ID: {tool_call_id}) executed. Succeeded: {succeeded}. Formatted Output: {formatted_output_content[:200]}...")
 
-        # Update FixCycleTracker state
-        fix_tracker.record_fix_attempt(succeeded)
+        # Update FixCycleTracker
+        # Get the state *before* record_tool_run for the conditional logging
+        # This state reflects whether a fix cycle was active *before* this tool_run was recorded.
+        pre_record_fix_state = tracker.get_current_fix_state()
+
+        if pre_record_fix_state.get("is_active") and pre_record_fix_state.get("failing_tool_name") and tool_name != pre_record_fix_state.get("failing_tool_name"):
+            logger.debug(f"DEBUG_FCT: Recording a fix attempt. Current tool: '{tool_name}', Failing tool: '{pre_record_fix_state.get('failing_tool_name')}'.")
+            logger.debug(f"DEBUG_FCT: Tracker state BEFORE record_tool_run for fix tool '{tool_name}' (ID: {tool_call_id}): {tracker.to_state()}")
+
+        tracker.record_tool_run(
+            tool_name=tool_name,
+            tool_args=tool_args,
+            tool_call_id=tool_call_id,
+            succeeded=succeeded,
+            output_content=formatted_output_content
+        )
+
+        # Use the same pre_record_fix_state for the condition, as it reflects the state *before* this tool's effects were recorded.
+        if pre_record_fix_state.get("is_active") and pre_record_fix_state.get("failing_tool_name") and tool_name != pre_record_fix_state.get("failing_tool_name"):
+            logger.debug(f"DEBUG_FCT: Tracker state AFTER record_tool_run for fix tool '{tool_name}' (ID: {tool_call_id}): {tracker.to_state()}")
 
         # Special handling for 'create-next-app' success to update project_subdirectory
         if tool_name == run_shell.name and succeeded and isinstance(raw_tool_output, RunShellOutput):
@@ -159,16 +181,24 @@ async def tool_executor_step(state: AgentState) -> dict:
                         logger.warning(f"Could not reliably extract app name from '{command_str}' or extracted name is an option: '{app_name}'")
                 else:
                     logger.warning(f"'create-next-app' detected, but could not extract app name from: {command_str}")
-    
-    # Get updated fix state from tracker to pass to AgentState
-    current_fix_status = fix_tracker.get_current_fix_state()
-    additional_state_updates['needs_verification'] = current_fix_status['needs_verification']
-    # The 'failing_tool_run' and 'fix_attempts' are now fully managed by FixCycleTracker's internal state,
-    # which is persisted via 'fix_cycle_tracker_state'.
-    # So, we don't need to explicitly pass them back unless a specific part of the graph needs them directly.
-    # For now, we'll rely on the planner to use 'needs_verification' and the LLM to adapt based on past failures.
 
-    additional_state_updates['fix_cycle_tracker_state'] = fix_tracker.to_state()
+    # After processing all tool calls, the tracker instance holds the latest state.
+    # This state will be returned via additional_state_updates.
+    current_tracker_state_dict = tracker.to_state()
+    logger.debug(f"Tracker's current state after all tool executions in this step: {current_tracker_state_dict}")
+
+    # Determine if verification is needed based on the tracker's state AFTER all tools ran
+    is_verification_needed = tracker.needs_verification()  # Call the method
+    if is_verification_needed:
+        failing_run_details = tracker._state.get("failing_tool_run")
+        tool_name_for_log = failing_run_details['name'] if failing_run_details else 'N/A'
+        tool_id_for_log = failing_run_details['id'] if failing_run_details else 'N/A'
+        logger.info(f"Tool execution complete. Verification needed for tool '{tool_name_for_log}' (ID: {tool_id_for_log}). FixCycleTracker state: {tracker.to_state()}")
+    else:
+        logger.info(f"Tool execution complete. No verification currently needed. FixCycleTracker state: {tracker.to_state()}")
+
+    additional_state_updates['needs_verification'] = is_verification_needed  # Use the correct variable
+    additional_state_updates['fix_cycle_tracker_state'] = current_tracker_state_dict
     
     # Remove deprecated fields from direct state update if they exist
     # These are now managed by FixCycleTracker

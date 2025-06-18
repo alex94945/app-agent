@@ -169,6 +169,7 @@
     -   [ ] Details:
         -   [ ] **Lint/Build Failure:** Agent uses `run_shell` (MCP) for `npm run lint` / `npm run build`. On failure: agent gets error, LLM plans fix (diff), agent calls `apply_patch`, retries shell command.
         -   [ ] **LSP Diagnostics:** After `write_file`/`apply_patch`, agent calls `get_diagnostics`. If errors: LLM plans fix, `apply_patch`.
+            -   Current debugging efforts for `apply_patch` (used in both lint/build and LSP-driven self-healing) involve ensuring robust error handling for async MCP calls, correct path/CWD management for `git apply`. The goal is to ensure `apply_patch` reliably functions within integration tests.
     -   [ ] Testing:
         -   [ ] **E2E Self-Healing Test: Linting Error**
             -   [ ] Action: Create an integration test that verifies the agent can fix a TypeScript linting error.

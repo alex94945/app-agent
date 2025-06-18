@@ -14,8 +14,10 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, AsyncGenerator
 from unittest.mock import patch, AsyncMock
 
+from common.config import Settings, get_settings
 from fastmcp import FastMCP, Client
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, BaseMessage
+from langchain_core.runnables import RunnableConfig
 
 from agent.agent_graph import (
     agent_graph, 
@@ -106,14 +108,39 @@ def thread_id_fixture() -> str:
     return f"test_type_error_fix_{uuid.uuid4()}"
 
 @pytest.fixture(scope="function")
-def initial_state_fixture(user_input_fixture: str, thread_id_fixture: str, mock_repo_path_fixture: Path, project_path_fixture: Path, source_file_path_in_project_fixture: Path) -> AgentState:
+def initial_state_fixture(
+    user_input_fixture: str, 
+    thread_id_fixture: str, 
+    mock_repo_path_fixture: Path, 
+    project_path_fixture: Path, 
+    source_file_path_in_project_fixture: Path,
+    project_subdir_name_fixture: str, # Added for project_name
+    monkeypatch: pytest.MonkeyPatch, # Added for setting REPO_DIR
+    file_io_client: Client # Added for consistency, though not directly used in this fixture's logic
+) -> AgentState:
+    # Set REPO_DIR for this test run
+    current_settings = get_settings()
+    monkeypatch.setattr(current_settings, 'REPO_DIR', str(mock_repo_path_fixture))
+
     # Ensure source_file_path_in_project_fixture is evaluated by including it as a dependency
     return AgentState(
         messages=[HumanMessage(content=user_input_fixture)],
         repo_path=str(mock_repo_path_fixture),
-        working_directory=str(project_path_fixture), # Agent typically works within the project subdir
-        current_file=str(source_file_path_in_project_fixture), # Provide the problematic file path
+        working_directory=str(project_path_fixture), 
+        current_file=str(source_file_path_in_project_fixture.relative_to(mock_repo_path_fixture)),
+        project_subdirectory="", # Explicitly set as empty for this test setup
+        project_name=project_subdir_name_fixture,
         thread_id=thread_id_fixture,
+        # Ensure other potentially required fields are initialized if AgentState demands them
+        iteration_count=0,
+        fix_cycle_tracker_state=None,
+        diagnostics=[],
+        active_document_content=None,
+        vector_search_results=[],
+        lsp_definitions=[],
+        lsp_hover_text=None,
+        needs_verification=False,
+        input=user_input_fixture # Keep if schema requires and uses it
     )
 
 
@@ -204,7 +231,8 @@ async def test_fix_typescript_type_error(
     initial_state_fixture: AgentState,
     thread_id_fixture: str,
     source_file_path_in_project_fixture: Path,
-    monkeypatch: pytest.MonkeyPatch, # Added monkeypatch
+    monkeypatch: pytest.MonkeyPatch,
+    file_io_client: Client, # Added file_io_client for patching file operations
     # The following are not directly used in the test body but ensure setup fixtures run:
     mock_repo_path_fixture: Path,
     project_path_fixture: Path,
@@ -219,6 +247,15 @@ async def test_fix_typescript_type_error(
     # Test setup code (like creating files, git init) is now in fixtures or at the start of the test.
     # The mock_mcp_shell_run_fixture has already been set up and yielded all_commands_called.
 
+    # --- Helper for monkeypatching async context managers (specific to this test) ---
+    @contextlib.asynccontextmanager
+    async def async_return_local(value):
+        yield value
+
+    # Patch open_mcp_session for file tools to use the file_io_client
+    # This ensures that tools.file_io_mcp_tools.read_file/write_file use our mock server (file_io_client)
+    monkeypatch.setattr("tools.file_io_mcp_tools.open_mcp_session", lambda *args, **kwargs: async_return_local(file_io_client))
+
     # --- Stub Planner --- 
     # This mock will ensure the planner's first call deterministically attempts to run 'tsc'.
     # Subsequent calls to the planner will use the real LLM.
@@ -227,37 +264,92 @@ async def test_fix_typescript_type_error(
     # original_planner_llm_step is the directly imported function
     original_planner_llm_step = planner_llm_step 
 
-    async def mock_planner_llm_step(state: AgentState, config: Dict[str, Any]):
+    async def mock_planner_llm_step_with_counter(state: AgentState, config: RunnableConfig):
         nonlocal planner_call_count
         planner_call_count += 1
-        logging.info(f"mock_planner_llm_step called (count: {planner_call_count})")
-        if planner_call_count == 1: # First call to planner
-            logging.info("mock_planner_llm_step: First call, returning stubbed AIMessage with tsc tool call.")
-            initial_tsc_tool_call_id = f"tool_call_tsc_initial_{uuid.uuid4().hex[:8]}"
-            # This ID needs to be accessible by the assertion logic later.
-            # We can store it in a place the main test function can access, e.g., a list or dict.
-            # For simplicity here, we'll rely on the test's AIMessage parsing to find it.
-            ai_message_with_tsc = AIMessage(
-                id=f"ai_msg_{uuid.uuid4().hex[:8]}",
-                content="Okay, I will run `tsc` to check for type errors.", 
+        logging.info(f"mock_planner_llm_step: Called {planner_call_count} times.")
+        logging.debug(f"mock_planner_llm_step: Current state messages: {state['messages']}")
+
+        if planner_call_count == 1:
+            # First call: Main planner initiates diagnosis
+            logging.info("mock_planner_llm_step (count 1): Returning diagnose_and_fix tool call.")
+            diagnose_tool_call_id = f"tool_call_diagnose_{uuid.uuid4().hex[:8]}"
+            ai_message_with_diagnose = AIMessage(
+                id=f"ai_msg_diagnose_{uuid.uuid4().hex[:8]}",
+                content="I need to diagnose and fix a TypeScript error.",
                 tool_calls=[
                     {
-                        "id": initial_tsc_tool_call_id,
-                        "name": "run_shell",
+                        "id": diagnose_tool_call_id,
+                        "name": "diagnose_and_fix",
                         "args": {
-                            "command": "tsc --noEmit --project tsconfig.json",
-                            "working_directory_relative_to_repo": "ts_type_error_project"
+                            "tool_input": f"Fix TypeScript type error in {project_subdir_name_fixture}/{source_file_name_fixture}",
+                            "file_path": f"{project_subdir_name_fixture}/{source_file_name_fixture}"
                         }
                     }
                 ]
             )
-            return {"messages": [ai_message_with_tsc]}
-        else:
-            logging.info("mock_planner_llm_step: Subsequent call, invoking original planner.")
+            return {"messages": [ai_message_with_diagnose]}
+
+        elif planner_call_count == 2:
+            # Second call: Planner invoked *by* diagnose_and_fix tool.
+            # This should return an AIMessage with the *diff string as its content*.
+            logging.info("mock_planner_llm_step (count 2): Returning AIMessage with diff content for diagnose_and_fix.")
+            file_path_in_repo = f"{project_subdir_name_fixture}/{source_file_name_fixture}"
+            correct_diff_content = (
+                f"--- a/{file_path_in_repo}\n"
+                f"+++ b/{file_path_in_repo}\n"
+                "@@ -1,2 +1,2 @@\n"
+                f"-let myValue: string = 123; // Type error: number assigned to string in {source_file_name_fixture}\n"
+                f"+let myValue: string = \"123\"; // Fixed: assign string to string in {source_file_name_fixture}\n"
+                " console.log(myValue);\n"
+            )
+            logging.debug(f"mock_planner_llm_step (count 2): Generated correct_diff_content for diagnose_and_fix:\n{correct_diff_content}")
+            ai_message_with_diff_text = AIMessage(
+                id=f"ai_msg_diff_text_{uuid.uuid4().hex[:8]}",
+                content=correct_diff_content, # Diff is the content
+                tool_calls=[] # No tool calls from this sub-planner step
+            )
+            logging.debug(f"mock_planner_llm_step (count 2): Returning AIMessage for diagnose_and_fix: {ai_message_with_diff_text.dict()}")
+            return {"messages": [ai_message_with_diff_text]}
+
+        elif planner_call_count == 3:
+            # Third call: Main planner, after diagnose_and_fix has run.
+            # The last message in state should be a ToolMessage from diagnose_and_fix, containing the diff string.
+            logging.info("mock_planner_llm_step (count 3): Constructing apply_patch from diagnose_and_fix output.")
+            last_message = state["messages"][-1]
+            if not isinstance(last_message, ToolMessage) or last_message.name != "diagnose_and_fix":
+                logging.error(f"mock_planner_llm_step (count 3): Expected ToolMessage from diagnose_and_fix, got {type(last_message)} with name {getattr(last_message, 'name', 'N/A')}")
+                # Fallback to original planner to see what it does, or raise error
+                return await original_planner_llm_step(state, config)
+
+            diff_from_tool_output = last_message.content
+            logging.debug(f"mock_planner_llm_step (count 3): Extracted diff from ToolMessage content:\n{diff_from_tool_output}")
+
+            file_path_in_repo = f"{project_subdir_name_fixture}/{source_file_name_fixture}"
+            apply_patch_tool_call_id = f"tool_call_apply_patch_{uuid.uuid4().hex[:8]}"
+            ai_message_with_patch = AIMessage(
+                id=f"ai_msg_patch_{uuid.uuid4().hex[:8]}",
+                content="The diagnose_and_fix tool provided a diff. I will apply it using the apply_patch tool.",
+                tool_calls=[
+                    {
+                        "id": apply_patch_tool_call_id,
+                        "name": "apply_patch",
+                        "args": {
+                            "file_path_in_repo": file_path_in_repo,
+                            "diff_content": diff_from_tool_output  # Use the diff from diagnose_and_fix output
+                        }
+                    }
+                ]
+            )
+            logging.debug(f"mock_planner_llm_step (count 3): Returning AIMessage with apply_patch: {ai_message_with_patch.dict()}")
+            return {"messages": [ai_message_with_patch]}
+
+        else: # Subsequent calls (e.g., planner_call_count > 3, for verify_node or other steps)
+            logging.info(f"mock_planner_llm_step: Call {planner_call_count}, invoking original planner.")
             return await original_planner_llm_step(state, config)
 
     # Patch the planner_llm_step function in the module where it's defined and used by the graph.
-    monkeypatch.setattr("agent.agent_graph.planner_llm_step", mock_planner_llm_step)
+    monkeypatch.setattr("agent.agent_graph.planner_llm_step", mock_planner_llm_step_with_counter)
 
     # --- Compile graph after patching ---
     from importlib import reload
@@ -344,46 +436,36 @@ async def test_fix_typescript_type_error(
     
     # Check if tsc eventually passed by looking for the verify_node's output
     tsc_eventually_passed = False
-    logging.debug("--- Processing ToolMessages to check for eventual TSC success (verify_node) ---")
-    for msg_idx, msg in enumerate(final_messages):
-        if isinstance(msg, ToolMessage):
-            logging.debug(f"  ToolMessage [{msg_idx}]: ID={msg.id}, ToolCallID={msg.tool_call_id}")
-            logging.debug(f"    Content type: {type(msg.content)}")
-            # Log only the first 500 chars of content to avoid overly verbose logs
-            content_str_for_log = str(msg.content)
-            logging.debug(f"    Content (raw, up to 500 chars): {content_str_for_log[:500]}{'...' if len(content_str_for_log) > 500 else ''}")
+    verification_tool_call_id = initial_tsc_tool_call_id + "_verify" if initial_tsc_tool_call_id else None
+    logging.debug(f"--- Checking for ToolMessage from verify_node with ToolCallID: {verification_tool_call_id} ---")
 
-            # The verify_node's output is a stringified JSON of RunShellOutput
-            # for the tsc command it runs.
-            try:
-                # Ensure msg.content is a string before attempting json.loads
-                if isinstance(msg.content, str):
-                    content_dict = json.loads(msg.content)
-                    logging.debug(f"    Content (parsed as JSON): {content_dict}")
-                    if isinstance(content_dict, dict):
-                        # Check for a successful tsc run (return_code 0)
-                        # AND ensure it's from a verify_node context by checking stdout.
-                        return_code = content_dict.get("return_code")
-                        stdout_content = content_dict.get("stdout", "")
-                        logging.debug(f"    Parsed JSON: return_code={return_code}, stdout_present={bool(stdout_content)}")
+    if verification_tool_call_id and verification_tool_call_id in tool_messages_by_id:
+        verify_node_msg = tool_messages_by_id[verification_tool_call_id]
+        logging.debug(f"  Found ToolMessage from verify_node: ID={verify_node_msg.id}, ToolCallID={verify_node_msg.tool_call_id}")
+        logging.debug(f"    Content type: {type(verify_node_msg.content)}")
+        content_str_for_log = str(verify_node_msg.content)
+        logging.debug(f"    Content (raw, up to 500 chars): {content_str_for_log[:500]}{'...' if len(content_str_for_log) > 500 else ''}")
 
-                        if return_code == 0 and \
-                           "Node verification successful. Output matches expected state." in stdout_content:
-                            tsc_eventually_passed = True
-                            logging.info(f"    SUCCESS: TSC eventually passed, confirmed by verify_node's ToolMessage (ID: {msg.tool_call_id}).")
-                            break
-                        else:
-                            logging.debug(f"    Condition not met: (return_code == 0 is {return_code == 0}), ('Node verification successful...' in stdout is {"Node verification successful. Output matches expected state." in stdout_content})") 
-                else:
-                    logging.debug(f"ToolMessage content is not a string, skipping JSON parse. Content: {msg.content}")
-            except json.JSONDecodeError:
-                # Log if content looks like it should be JSON but isn't, or just continue
-                if isinstance(msg.content, str) and msg.content.strip().startswith("{"):
-                    logging.warning(f"Failed to parse ToolMessage content that looked like JSON: {msg.content}")
-                continue # Not a JSON string or not a string at all
-            except Exception as e:
-                logging.error(f"Unexpected error processing ToolMessage content: {e}, Content: {msg.content}")
-                continue
+        try:
+            if isinstance(verify_node_msg.content, str):
+                content_dict = json.loads(verify_node_msg.content)
+                logging.debug(f"    Content (parsed as JSON): {content_dict}")
+                if isinstance(content_dict, dict):
+                    return_code = content_dict.get("return_code")
+                    if return_code == 0:
+                        tsc_eventually_passed = True
+                        logging.info(f"    SUCCESS: TSC eventually passed, confirmed by verify_node's ToolMessage (ID: {verify_node_msg.tool_call_id}) with return_code 0.")
+                    else:
+                        logging.warning(f"    FAILURE: TSC verification by verify_node's ToolMessage (ID: {verify_node_msg.tool_call_id}) had return_code {return_code}.")
+            else:
+                logging.debug(f"ToolMessage content from verify_node is not a string, skipping JSON parse. Content: {verify_node_msg.content}")
+        except json.JSONDecodeError:
+            logging.warning(f"Failed to parse ToolMessage content from verify_node that looked like JSON: {verify_node_msg.content}")
+        except Exception as e:
+            logging.error(f"Unexpected error processing ToolMessage content from verify_node: {e}, Content: {verify_node_msg.content}")
+    else:
+        logging.warning(f"ToolMessage from verify_node (expected ToolCallID: {verification_tool_call_id}) not found in final messages.")
+
     logging.debug(f"--- Finished processing ToolMessages. tsc_eventually_passed = {tsc_eventually_passed} ---")
 
     assert initial_tsc_tool_call_id is not None, "Initial failing tsc tool call ID was not captured from the stubbed planner's AIMessage or found in subsequent messages. This indicates a problem with the test setup or the planner's behavior."

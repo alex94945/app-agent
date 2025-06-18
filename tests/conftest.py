@@ -52,10 +52,11 @@ def build_shell_tools_server() -> FastMCP:
     server = FastMCP("ShellToolsTestServer")
 
     @server.tool(name="shell.run")
-    async def actual_shell_run(command: str, cwd: Optional[str] = None) -> _ShellRunOutput:
+    async def actual_shell_run(command: str, cwd: Optional[str] = None, stdin: Optional[str] = None, json: bool = False):
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd
@@ -192,25 +193,25 @@ def build_patch_tools_server() -> FastMCP:
             raise McpError(ErrorData(code=GENERIC_TOOL_ERROR_CODE, message=f"Error removing file {path}: {str(e)}"))
 
     @server.tool(name="shell.run")
-    async def actual_shell_run(command: str, cwd: Optional[str] = None) -> _ShellRunOutput:
+    async def actual_shell_run(command: str, cwd: Optional[str] = None, stdin: Optional[str] = None, json: bool = False):
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd
             )
-            stdout_bytes, stderr_bytes = await proc.communicate()
-            
+            stdout_bytes, stderr_bytes = await proc.communicate(input=stdin.encode() if stdin else None)
+
             stdout = stdout_bytes.decode().strip() if stdout_bytes else ""
             stderr = stderr_bytes.decode().strip() if stderr_bytes else ""
             return_code = proc.returncode if proc.returncode is not None else -1
 
-            return _ShellRunOutput(
-                stdout=stdout,
-                stderr=stderr,
-                return_code=return_code
-            )
+            result_obj = _ShellRunOutput(stdout=stdout, stderr=stderr, return_code=return_code)
+            if json:
+                return result_obj.model_dump()
+            return result_obj
         except Exception as e:
             return _ShellRunOutput(
                 stdout="",

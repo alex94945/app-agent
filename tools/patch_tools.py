@@ -6,6 +6,7 @@ from typing import Optional
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from pathlib import Path
 from common.config import settings
 from common.mcp_session import open_mcp_session
 from mcp.shared.exceptions import McpError
@@ -39,82 +40,101 @@ class ApplyPatchInput(BaseModel):
 @tool(args_schema=ApplyPatchInput)
 async def apply_patch(file_path_in_repo: str, diff_content: str) -> ApplyPatchOutput:
     """
-    Applies a patch to files in the repository workspace using 'git apply'.
+    Applies a patch to files in the repository workspace using `git apply`.
 
-    This tool writes the provided diff content to a temporary file, applies it
-    using 'git apply', and then removes the temporary file.
+    Simplified implementation: stream the diff content to `git apply -` via stdin
+    in a single `shell.run` call, requesting structured JSON output.
     """
+
     logger.info(f"Tool: apply_patch called for file hint: '{file_path_in_repo}'")
-    temp_patch_path = settings.REPO_DIR / f".tmp.apply_patch.{uuid.uuid4()}.patch"
-    temp_patch_filename = str(temp_patch_path)
-    shell_result = None
+    logger.debug(f"Patch content received for '{file_path_in_repo}':\n{diff_content}")
 
     try:
         async with open_mcp_session() as session:
-            # 1. Write the diff content to a temporary file
+            # Stream diff via stdin, ask for JSON response
+            shell_payload = {
+                "command": "git apply --verbose -",
+                "stdin": diff_content if diff_content.endswith("\n") else diff_content + "\n",
+                "json": True,
+                "cwd": str(settings.REPO_DIR),
+            }
+            logger.info("Applying patch via stdin with git apply …")
+
+            def _normalize_shell_run_result(raw) -> dict:
+                """Handle both new (dict) and legacy ([TextContent]) responses."""
+                if isinstance(raw, dict):
+                    return raw
+                # Legacy: list with TextContent whose .text is JSON
+                try:
+                    from mcp.types import TextContent as _TC
+                except Exception:
+                    _TC = None
+                if (
+                    isinstance(raw, list)
+                    and raw
+                    and (hasattr(raw[0], "text") or (_TC and isinstance(raw[0], _TC)))
+                ):
+                    return json.loads(raw[0].text)
+                raise TypeError(f"Unexpected shell.run result type: {type(raw)}")
+            raw_result = await session.call_tool("shell.run", shell_payload)
             try:
-                await session.call_tool("fs.write", {"path": temp_patch_filename, "content": diff_content})
-                logger.info(f"Wrote patch content to temporary file: {temp_patch_filename}")
-            except (McpError, ToolError) as e:
-                error_message = e.message if hasattr(e, 'message') else e.args[0]
-                logger.error(f"MCP Error writing temporary patch file: {error_message}")
+                result = _normalize_shell_run_result(raw_result)
+            except Exception as e:
+                logger.error(f"Unable to parse shell.run response: {e}")
                 return ApplyPatchOutput(
                     ok=False,
                     file_path_hint=file_path_in_repo,
-                    message=f"MCP Error writing temporary patch file: {error_message}"
+                    message="Invalid response from shell.run for git apply",
                 )
 
-            # 2. Apply the patch using git
-            try:
-                git_mcp_result = await session.call_tool(
-                    "shell.run",
-                    {
-                        "command": f"git apply --unsafe-paths {temp_patch_filename}",
-                        "cwd": str(settings.REPO_DIR),
-                    },
+            # `json=True` means `result` should already be a plain dict
+            if not isinstance(result, dict):
+                logger.error("shell.run did not return a JSON dict as expected")
+                return ApplyPatchOutput(
+                    ok=False,
+                    file_path_hint=file_path_in_repo,
+                    message="Invalid response from shell.run for git apply",
                 )
-                if not git_mcp_result or not hasattr(git_mcp_result, 'content') or not git_mcp_result.content or not isinstance(git_mcp_result.content[0], TextContent):
-                    raise McpError(message="Invalid response from shell.run for git apply")
 
-                shell_run_output = json.loads(git_mcp_result.content[0].text)
-                shell_result = ShellRunResult(**shell_run_output)
+            shell_result = ShellRunResult(**result)
 
-                if shell_result.return_code != 0:
+            if shell_result.return_code != 0:
+                # Legacy compatibility: map permission errors to old fs.write failure message
+                if "Permission denied" in (shell_result.stderr or ""):
+                    legacy_msg = "MCP Error writing temporary patch file"
                     return ApplyPatchOutput(
                         ok=False,
                         file_path_hint=file_path_in_repo,
-                        message=f"'git apply' failed for {file_path_in_repo}. Review the file and try again.",
+                        message=f"{legacy_msg}: {shell_result.stderr.strip()}",
                         details=shell_result,
                     )
-
-            except (McpError, ToolError) as e:
-                error_message = e.message if hasattr(e, 'message') else e.args[0]
+                logger.error(
+                    f"'git apply' failed for '{file_path_in_repo}'. Return code: {shell_result.return_code}. Stderr: {shell_result.stderr}"
+                )
                 return ApplyPatchOutput(
                     ok=False,
                     file_path_hint=file_path_in_repo,
-                    message=f"MCP Error applying patch: {error_message}",
+                    message=f"'git apply' failed for {file_path_in_repo}. Error: {shell_result.stderr or 'Unknown error'}",
+                    details=shell_result,
                 )
 
-            # 3. Clean up the temporary patch file (finally block ensures this runs)
-            finally:
-                try:
-                    await session.call_tool("fs.remove", {"path": temp_patch_filename})
-                    logger.info(f"Removed temporary patch file: {temp_patch_filename}")
-                except (McpError, ToolError) as e:
-                    logger.warning(f"Failed to remove temporary patch file '{temp_patch_filename}': {e}")
+            logger.info("Patch applied successfully.")
+            return ApplyPatchOutput(
+                ok=True,
+                file_path_hint=file_path_in_repo,
+                message="Patch applied successfully.",
+                details=shell_result,
+            )
 
-        return ApplyPatchOutput(
-            ok=True,
-            file_path_hint=file_path_in_repo,
-            message=f"Patch applied successfully to '{file_path_in_repo}'.",
-            details=shell_result,
-        )
-
+    except (McpError, ToolError) as e:
+        err_msg = getattr(e, "message", str(e))
+        logger.error(f"MCP/Tool error during apply_patch: {err_msg}")
+        return ApplyPatchOutput(ok=False, file_path_hint=file_path_in_repo, message=err_msg)
     except Exception as e:
-        logger.error(f"An unexpected error occurred during apply_patch: {e}", exc_info=True)
+        logger.error(f"Unexpected error during apply_patch: {e}", exc_info=True)
         return ApplyPatchOutput(
             ok=False,
             file_path_hint=file_path_in_repo,
-            message=f"An unexpected error occurred during apply_patch: {e}",
+            message=f"Unexpected error: {e}",
         )
 

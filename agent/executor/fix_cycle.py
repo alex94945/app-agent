@@ -22,9 +22,10 @@ class FixCycleTracker:
         if state:
             self._state: FixCycleState = state
         else:
-            self._state: FixCycleState = self._get_default_state()
+            self._state: FixCycleState = FixCycleTracker._get_default_state()
 
-    def _get_default_state(self) -> FixCycleState:
+    @staticmethod
+    def _get_default_state() -> FixCycleState:
         return {
             "is_active": False,
             "failing_tool_run": None,
@@ -37,17 +38,16 @@ class FixCycleTracker:
     @classmethod
     def from_state(cls, state_dict: Optional[Dict[str, Any]]) -> "FixCycleTracker":
         if not state_dict:
-            # Use type ignore because _get_default_state is an instance method called on cls instance implicitly
-            return cls(state=cls._get_default_state(None)) # type: ignore 
-        
-        default_state_for_instance = cls._get_default_state(None) # type: ignore
+            return cls()  # __init__ will use _get_default_state
+
+        default_state_values = FixCycleTracker._get_default_state()
         validated_state: FixCycleState = {
-            "is_active": state_dict.get("is_active", default_state_for_instance["is_active"]),
-            "failing_tool_run": state_dict.get("failing_tool_run", default_state_for_instance["failing_tool_run"]),
-            "fix_attempts_count": state_dict.get("fix_attempts_count", default_state_for_instance["fix_attempts_count"]),
-            "max_attempts_for_cycle": state_dict.get("max_attempts_for_cycle", default_state_for_instance["max_attempts_for_cycle"]),
-            "needs_verification": state_dict.get("needs_verification", default_state_for_instance["needs_verification"]),
-            "verification_history": state_dict.get("verification_history", default_state_for_instance["verification_history"]),
+            "is_active": state_dict.get("is_active", default_state_values["is_active"]),
+            "failing_tool_run": state_dict.get("failing_tool_run", default_state_values["failing_tool_run"]),
+            "fix_attempts_count": state_dict.get("fix_attempts_count", default_state_values["fix_attempts_count"]),
+            "max_attempts_for_cycle": state_dict.get("max_attempts_for_cycle", default_state_values["max_attempts_for_cycle"]),
+            "needs_verification": state_dict.get("needs_verification", default_state_values["needs_verification"]),
+            "verification_history": state_dict.get("verification_history", default_state_values["verification_history"]),
         }
         return cls(state=validated_state)
 
@@ -113,7 +113,7 @@ class FixCycleTracker:
 
         self._state["verification_history"].append(succeeded)
         if succeeded:
-            self._state.update(self._get_default_state())
+            self._state.update(FixCycleTracker._get_default_state())
         else:
             self._state["needs_verification"] = False
 

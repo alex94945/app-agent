@@ -3,12 +3,14 @@
 import logging
 from typing import Dict, Any, List, Optional
 from pathlib import Path
+import asyncio
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from common.config import settings
 from agent.lsp_manager import get_lsp_manager
+from lsprotocol import types as lsp_types # Removed converters import
 
 logger = logging.getLogger(__name__)
 
@@ -37,21 +39,56 @@ async def get_diagnostics(file_path: Optional[str] = None, project_subdirectory:
     repo_dir = Path(settings.REPO_DIR)
     workspace_path = repo_dir / project_subdirectory if project_subdirectory else repo_dir
     manager = await get_lsp_manager(str(workspace_path))
-    if not manager.client or not manager.client.is_running:
-        logger.info(f"LSP client for {workspace_path} not running, starting it for diagnostics.")
+
+    # Always ensure the manager is running
+    if not manager.client or manager.client.stopped:
+        logger.info(f"LSP client for {workspace_path} not running, starting it.")
         await manager.start()
+        await asyncio.sleep(1) # Give it a moment to initialize
 
     if file_path:
         # Ensure file_path is relative to the workspace path for the LSP server
         absolute_file_path = workspace_path / file_path
-        diagnostics = await manager.get_diagnostics(str(absolute_file_path))
-    else:
-        diagnostics = await manager.get_all_diagnostics()
+        
+        # Explicitly tell the server to open the document to trigger analysis
+        await manager.open_document(str(absolute_file_path))
+        
+        # Give the server a moment to process the didOpen and generate diagnostics
+        await asyncio.sleep(1) # Increased from 0.5 to 1, consider making configurable or dynamic
+        
+        # Wait for diagnostics to be published
+        await manager.wait_for_diagnostics(str(absolute_file_path), timeout=10.0)
 
-    # The diagnostics from pygls are already in a serializable format (dicts)
-    # so we can return them directly.
-    logger.info(f"Retrieved {len(diagnostics)} diagnostics for {file_path or 'all files'} in {workspace_path}")
-    return [diag.model_dump() for diag in diagnostics]
+        diagnostic_objects = await manager.get_diagnostics(str(absolute_file_path))
+    else:
+        # This branch might be less reliable without opening specific files, but we'll keep it.
+        diagnostic_objects = await manager.get_all_diagnostics()
+
+    # Convert Diagnostic Pydantic models to JSON-serializable dictionaries
+    serializable_diagnostics = []
+    for d in diagnostic_objects:
+        if isinstance(d, lsp_types.Diagnostic):
+            try:
+                raw_dump = d.model_dump(mode='json')
+                clean_dump = _to_json_safe(raw_dump)
+                serializable_diagnostics.append(clean_dump)
+            except Exception as e:
+                logger.error(f"Error serializing or sanitizing a diagnostic object: {d}. Error: {e}")
+                # Optionally, append a placeholder or skip
+        else:
+            logger.warning(f"Skipping non-Diagnostic object in diagnostics list: {type(d)}")
+
+    logger.info(f"Retrieved {len(serializable_diagnostics)} serializable diagnostics for {file_path or 'all files'} in {workspace_path}")
+
+    if logger.isEnabledFor(logging.DEBUG):
+        try:
+            import json, itertools
+            preview = list(itertools.islice(serializable_diagnostics, 3))
+            logger.debug("Sanitized diagnostics preview:\n%s", json.dumps(preview, indent=2))
+        except Exception as e:
+            logger.debug("Could not preview sanitized diagnostics: %s", e)
+
+    return serializable_diagnostics
 
 @tool(args_schema=DiagnosticsInput)
 async def diagnose(file_path: Optional[str] = None, project_subdirectory: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -64,4 +101,27 @@ async def diagnose(file_path: Optional[str] = None, project_subdirectory: Option
         "file_path": file_path, 
         "project_subdirectory": project_subdirectory
     })
+
+
+def _to_json_safe(obj, _path="root"):
+    """
+    Recursively convert any object to something that survives json.dumps.
+    Non-serialisable objects become their repr(); lists / dicts are
+    walked depth-first to strip surprises such as asyncio.StreamReader.
+    """
+    import json, typing, collections.abc, datetime, decimal, uuid # type: ignore
+    basic = (str, int, float, bool, type(None))
+    if isinstance(obj, basic):
+        return obj
+    if isinstance(obj, (datetime.date, datetime.datetime)):
+        return obj.isoformat()
+    if isinstance(obj, (decimal.Decimal, uuid.UUID)):
+        return str(obj)
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        return [_to_json_safe(i, f"{_path}[]") for i in obj]
+    if isinstance(obj, dict):
+        return {k: _to_json_safe(v, f"{_path}.{k}") for k, v in obj.items()}
+    # Anything else → string fallback **with type hint** so it’s inspectable later
+    logger.warning(f"_to_json_safe: Replaced non-serializable object of type {type(obj).__name__} at path {_path} with its string representation.")
+    return f"<<non-serialisable:{type(obj).__name__} at {_path}>>"
 

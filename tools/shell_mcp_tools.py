@@ -1,6 +1,7 @@
 import logging
 import json
 from typing import Dict, Any, Optional
+from pathlib import Path # Added Path import
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 
@@ -40,14 +41,15 @@ async def run_shell(command: str, working_directory_relative_to_repo: Optional[s
     logger.info(f"Tool: run_shell called with command: '{command}' in dir: '{working_directory_relative_to_repo}'")
     try:
         settings = get_settings()
-        repo_dir = settings.REPO_DIR
+        repo_dir = Path(settings.REPO_DIR) # Ensure repo_dir is a Path object
         absolute_cwd = str(repo_dir)
         if working_directory_relative_to_repo:
             absolute_cwd = str(repo_dir / working_directory_relative_to_repo)
         async with open_mcp_session() as session:
+            # FastMCP shell.run expects a "cwd" argument for the working directory.
             mcp_result = await session.call_tool(
                 "shell.run",
-                arguments={"command": command, "working_directory_relative_to_repo": absolute_cwd},
+                arguments={"command": command, "cwd": absolute_cwd},
             )
 
             # mcp_result is a list of content items from FastMCP, e.g., [TextContent(...)]

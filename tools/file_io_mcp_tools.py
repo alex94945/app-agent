@@ -34,14 +34,17 @@ async def read_file(path_in_repo: str) -> str:
     Reads the entire content of a file from the repository workspace.
     The path should be relative to the repository root.
     """
-    logger.info(f"Tool: read_file called for path: {path_in_repo}")
+    logger.info(f"Tool: read_file called for path_in_repo: '{path_in_repo}'")
+    logger.debug(f"read_file: Using settings.REPO_DIR: '{settings.REPO_DIR}'")
+    absolute_path_to_read = Path(settings.REPO_DIR) / path_in_repo
+    logger.debug(f"read_file: Computed absolute_path_to_read: '{absolute_path_to_read}'")
     try:
         # The mock MCP server's fs.read tool operates relative to its own CWD.
         # The agent provides paths relative to the repo root.
         # We must resolve the path to be absolute for the mock server.
         async with open_mcp_session() as session:
-            content = await session.call_tool("fs.read", {"path": str(Path(settings.REPO_DIR) / path_in_repo)})
-            logger.debug(f"read_file: session.call_tool returned: {content!r} (type: {type(content)})")
+            content = await session.call_tool("fs.read", {"path": str(absolute_path_to_read)})
+            logger.debug(f"read_file: Raw content from session.call_tool('fs.read', path='{absolute_path_to_read}'): {content!r} (type: {type(content)})")
 
             # Detailed logging for debugging content structure
             if hasattr(content, 'content'):
@@ -60,14 +63,11 @@ async def read_file(path_in_repo: str) -> str:
             else:
                 logger.debug(f"read_file: content does not have attribute 'content'.")
 
-            if hasattr(content, 'content') and content.content and isinstance(content.content, list) and len(content.content) > 0 and hasattr(content.content[0], 'text'):
-                # Assuming TextContent or a similar structure with a .text attribute
-                # Based on docs, call_tool returns List[mcp.types.TextContent | mcp.types.ImageContent | ...]
-                # For fs.read, we expect a single TextContent.
-                # The actual type from fastmcp might be mcp.sdk.types.Content (which has .text)
-                # or mcp.types.TextContent (also has .text)
-                processed_content = content.content[0].text
-                logger.debug(f"read_file: processed content to string: {processed_content!r}")
+            if isinstance(content, list) and len(content) > 0 and hasattr(content[0], 'text'):
+                # Content is expected to be a list, e.g., [TextContent(...)]
+                # We extract the .text attribute from the first element.
+                processed_content = content[0].text
+                logger.debug(f"read_file: Extracted text from content[0].text: {processed_content!r}")
                 return processed_content
             elif isinstance(content, str): # Should not happen based on docs, but as a fallback
                 logger.warning(f"read_file: session.call_tool unexpectedly returned str, not List[Content]. Using as is.")
