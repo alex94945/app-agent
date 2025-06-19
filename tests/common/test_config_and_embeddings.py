@@ -11,11 +11,17 @@ from langchain_openai import OpenAIEmbeddings
 # We need to test the modules, so we import them.
 from common import config, embeddings
 
-def test_settings_load_defaults():
+def test_settings_load_defaults(monkeypatch):
     """Tests that the Settings class loads with default values."""
     # Instantiate the class directly, providing no env file.
     # Pydantic-settings will not find a .env file and use defaults.
     # This test is now independent of any .env file in the project root.
+    # Temporarily remove relevant env vars to ensure model defaults are tested
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    monkeypatch.delenv("EMBED_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("REPO_DIR", raising=False)
+
     settings_instance = config.Settings(_env_file=None)
 
     # Check default values
@@ -29,6 +35,13 @@ def test_settings_load_from_env_file(tmp_path, monkeypatch):
     Tests that settings are correctly overridden by a .env file.
     tmp_path is a pytest fixture that provides a temporary directory.
     """
+    # Temporarily remove relevant env vars to ensure .env file takes precedence
+    # over environment for these specific settings.
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    monkeypatch.delenv("EMBED_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("REPO_DIR", raising=False)
+
     # 1. Create a dummy .env file in the temporary directory
     env_content = """
 REPO_DIR=./custom_workspace

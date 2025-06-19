@@ -1,0 +1,1 @@
+const unusedVar = 42;

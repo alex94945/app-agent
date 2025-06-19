@@ -1,111 +1,116 @@
 import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
+import asyncio
+import subprocess
+from pathlib import Path
+from unittest.mock import patch
 
-from tools.patch_tools import apply_patch
-from mcp.shared.exceptions import McpError, ErrorData
+from tools.patch_tools import apply_patch, ApplyPatchOutput
+from tests.conftest import mock_mcp_session_cm
 
-DIFF_CONTENT = """--- a/test.txt
+# --- Test Data ---
+
+DIFF_CONTENT_SUCCESS = """--- a/test.txt
 +++ b/test.txt
-@@ -1 +1 @@
+@@ -1,1 +1,1 @@
 -hello
 +hello world
 """
 
+DIFF_CONTENT_FAILURE = """--- a/test.txt
++++ b/test.txt
+@@ -1,1 +1,1 @@
+-this will not apply
++because the original content is wrong
+"""
+
+# --- Fixtures ---
+
+@pytest.fixture
+def git_repo(tmp_path: Path):
+    """Creates a temporary git repository for testing."""
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    # Run git commands synchronously for setup
+    subprocess.run(["git", "init"], cwd=repo_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_path, check=True)
+    
+    # Create and commit an initial file
+    test_file = repo_path / "test.txt"
+    test_file.write_text("hello\n")
+    subprocess.run(["git", "add", "test.txt"], cwd=repo_path, check=True)
+    subprocess.run(["git", "commit", "-m", "initial commit"], cwd=repo_path, check=True)
+    
+    return repo_path
+
+# --- Tests ---
+
 @pytest.mark.asyncio
-@patch('tools.patch_tools.uuid.uuid4')
-@patch('tools.patch_tools.ClientSession')
-@patch('tools.patch_tools.streamablehttp_client')
-async def test_apply_patch_success(mock_http_client, mock_client_session, mock_uuid):
-    """Tests that apply_patch successfully writes, applies, and removes a patch."""
-    # 1. Setup Mocks
-    mock_uuid.return_value = 'test-uuid'
-    temp_patch_filename = ".tmp.apply_patch.test-uuid.patch"
-
-    mock_reader, mock_writer = AsyncMock(), AsyncMock()
-    mock_http_client.return_value.__aenter__.return_value = (mock_reader, mock_writer)
-
-    mock_session_instance = AsyncMock()
-    mock_git_result = MagicMock()
-    mock_git_result.stdout = ""
-    mock_git_result.stderr = ""
-    mock_git_result.return_code = 0
-    mock_session_instance.shell.run.return_value = mock_git_result
-    mock_client_session.return_value.__aenter__.return_value = mock_session_instance
+async def test_apply_patch_success(patch_client, git_repo, monkeypatch):
+    """Tests a successful patch application using a real git repo."""
+    # 1. Setup
+    monkeypatch.setattr('common.config.settings.REPO_DIR', git_repo)
+    test_file = git_repo / "test.txt"
 
     # 2. Call Tool
-    result = await apply_patch.ainvoke({
-        "file_path_in_repo": "test.txt",
-        "diff_content": DIFF_CONTENT
-    })
+    with patch('tools.patch_tools.open_mcp_session', return_value=mock_mcp_session_cm(patch_client)):
+        result = await apply_patch.ainvoke({
+            "file_path_in_repo": "test.txt",
+            "diff_content": DIFF_CONTENT_SUCCESS
+        })
 
     # 3. Assertions
-    mock_session_instance.fs.write.assert_awaited_once_with(path=temp_patch_filename, content=DIFF_CONTENT)
-    mock_session_instance.shell.run.assert_awaited_once_with(
-        command=f"git apply --unsafe-paths --inaccurate-eof {temp_patch_filename}",
-        cwd="."
-    )
-    mock_session_instance.fs.remove.assert_awaited_once_with(path=temp_patch_filename)
-    assert result["return_code"] == 0
+    assert isinstance(result, ApplyPatchOutput)
+    assert result.ok is True
+    assert result.details.return_code == 0
+    assert "Patch applied successfully" in result.message
+    
+    # Verify the file content has changed
+    modified_content = await asyncio.to_thread(test_file.read_text)
+    assert modified_content == "hello world\n"
 
 @pytest.mark.asyncio
-@patch('tools.patch_tools.uuid.uuid4')
-@patch('tools.patch_tools.ClientSession')
-@patch('tools.patch_tools.streamablehttp_client')
-async def test_apply_patch_git_failure(mock_http_client, mock_client_session, mock_uuid):
+async def test_apply_patch_git_failure(patch_client, git_repo, monkeypatch):
     """Tests that apply_patch handles a failure from the 'git apply' command."""
-    # 1. Setup Mocks
-    mock_uuid.return_value = 'test-uuid'
-    temp_patch_filename = ".tmp.apply_patch.test-uuid.patch"
+    # 1. Setup
+    monkeypatch.setattr('common.config.settings.REPO_DIR', git_repo)
 
-    mock_reader, mock_writer = AsyncMock(), AsyncMock()
-    mock_http_client.return_value.__aenter__.return_value = (mock_reader, mock_writer)
-
-    mock_session_instance = AsyncMock()
-    mock_git_result = MagicMock()
-    mock_git_result.stdout = ""
-    mock_git_result.stderr = "error: patch failed"
-    mock_git_result.return_code = 1
-    mock_session_instance.shell.run.return_value = mock_git_result
-    mock_client_session.return_value.__aenter__.return_value = mock_session_instance
-
-    # 2. Call Tool
-    result = await apply_patch.ainvoke({
-        "file_path_in_repo": "test.txt",
-        "diff_content": DIFF_CONTENT
-    })
+    # 2. Call Tool with a patch that will fail
+    with patch('tools.patch_tools.open_mcp_session', return_value=mock_mcp_session_cm(patch_client)):
+        result = await apply_patch.ainvoke({
+            "file_path_in_repo": "test.txt",
+            "diff_content": DIFF_CONTENT_FAILURE
+        })
 
     # 3. Assertions
-    assert result["return_code"] == 1
-    assert "patch failed" in result["stderr"]
-    # Ensure cleanup still happens
-    mock_session_instance.fs.remove.assert_awaited_once_with(path=temp_patch_filename)
+    assert isinstance(result, ApplyPatchOutput)
+    assert result.ok is False
+    assert result.details.return_code != 0
+    assert "'git apply' failed" in result.message
+    assert "error: patch failed" in result.details.stderr
 
 @pytest.mark.asyncio
-@patch('tools.patch_tools.uuid.uuid4')
-@patch('tools.patch_tools.ClientSession')
-@patch('tools.patch_tools.streamablehttp_client')
-async def test_apply_patch_mcp_write_error(mock_http_client, mock_client_session, mock_uuid):
-    """Tests that apply_patch handles an MCPError during the file write step."""
-    # 1. Setup Mocks
-    mock_uuid.return_value = 'test-uuid'
-
-    mock_reader, mock_writer = AsyncMock(), AsyncMock()
-    mock_http_client.return_value.__aenter__.return_value = (mock_reader, mock_writer)
-
-    mock_session_instance = AsyncMock()
-    error_data = ErrorData(code=-32001, message="Permission denied")
-    mock_session_instance.fs.write.side_effect = McpError(error_data)
-    mock_client_session.return_value.__aenter__.return_value = mock_session_instance
+async def test_apply_patch_fs_write_error(patch_client, git_repo, monkeypatch):
+    """Tests that apply_patch handles an error during the initial fs.write call."""
+    # 1. Setup
+    monkeypatch.setattr('common.config.settings.REPO_DIR', git_repo)
+    
+    # Make the repo directory read-only to cause a write error
+    # The temporary patch file is written to the root of the repo dir
+    git_repo.chmod(0o555)
 
     # 2. Call Tool
-    result = await apply_patch.ainvoke({
-        "file_path_in_repo": "test.txt",
-        "diff_content": DIFF_CONTENT
-    })
+    with patch('tools.patch_tools.open_mcp_session', return_value=mock_mcp_session_cm(patch_client)):
+        result = await apply_patch.ainvoke({
+            "file_path_in_repo": "test.txt",
+            "diff_content": DIFF_CONTENT_SUCCESS
+        })
 
     # 3. Assertions
-    assert result["return_code"] == -1
-    assert "MCP Error writing temporary patch file" in result["stderr"]
-    # Ensure shell.run and fs.remove were not called
-    mock_session_instance.shell.run.assert_not_called()
-    mock_session_instance.fs.remove.assert_not_called()
+    assert isinstance(result, ApplyPatchOutput)
+    assert result.ok is False
+    assert "MCP Error writing temporary patch file" in result.message
+    assert "Permission denied" in result.message
+    
+    # Reset permissions so tmp_path cleanup works
+    git_repo.chmod(0o755)

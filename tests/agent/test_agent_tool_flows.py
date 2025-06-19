@@ -401,7 +401,7 @@ async def test_vector_search_flow(mocker):
     # Assert the content of the final message returned by the agent
     assert isinstance(final_agent_message, AIMessage)
     assert final_agent_message.content == final_llm_response_content_vector_search
-    assert not final_agent_message.tool_calls
+    assert not final_agent_message.tool_calls # Ensure no further tool calls
 
     # Verify the ToolMessage was correctly added to the state and processed by the second LLM call
     second_planner_llm_call_args = mock_bound_llm.invoke.call_args_list[1]
@@ -415,9 +415,8 @@ async def test_vector_search_flow(mocker):
     
     assert found_tool_message is not None, "ToolMessage not found in messages for second planner call"
     assert found_tool_message.tool_call_id == expected_vector_search_tool_call['id']
-    # The content of ToolMessage for vector_search is a list of dicts, so convert to string for comparison if needed, or check structure.
-    # For simplicity, we'll check if a key part of the content is there.
-    assert str(mock_search_results_list) in found_tool_message.content
+    import json # Ensure json is imported for dumps
+    assert found_tool_message.content == json.dumps(mock_search_results_list, indent=2)
 
 
 @pytest.mark.asyncio

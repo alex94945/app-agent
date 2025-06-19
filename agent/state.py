@@ -22,3 +22,6 @@ class AgentState(TypedDict):
 
     # The subdirectory within REPO_DIR that is the current project's root, e.g., 'my-app'
     project_subdirectory: Optional[str] = Field(default=None, description="The subdirectory within REPO_DIR that is the current project's root, e.g., 'my-app'.")
+
+    # Serialized state for FixCycleTracker
+    fix_cycle_tracker_state: Optional[dict] = None
