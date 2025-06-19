@@ -53,7 +53,7 @@ async def apply_patch(file_path_in_repo: str, diff_content: str) -> ApplyPatchOu
         async with open_mcp_session() as session:
             # Stream diff via stdin, ask for JSON response
             shell_payload = {
-                "command": "git apply --verbose -",
+                "command": "git apply --verbose --allow-empty --whitespace=nowarn -",
                 "stdin": diff_content if diff_content.endswith("\n") else diff_content + "\n",
                 "json": True,
                 "cwd": str(settings.REPO_DIR),
@@ -62,19 +62,48 @@ async def apply_patch(file_path_in_repo: str, diff_content: str) -> ApplyPatchOu
 
             def _normalize_shell_run_result(raw) -> dict:
                 """Handle both new (dict) and legacy ([TextContent]) responses."""
+                # Case 1: Received a plain dict already
                 if isinstance(raw, dict):
-                    return raw
-                # Legacy: list with TextContent whose .text is JSON
+                    # If it already looks like ShellRunResult, return as-is
+                    if {"stdout", "stderr", "return_code"}.issubset(raw.keys()):
+                        return raw
+                    # If it is CallToolResult dumped to dict, dig into its content
+                    if "content" in raw and isinstance(raw["content"], list):
+                        raw = raw["content"]  # fall through to list handling
+                    else:
+                        raise TypeError(
+                            "Unexpected dict keys in shell.run result: " + ",".join(raw.keys())
+                        )
+
+                # Case 2: FastMCP 2.x `CallToolResult` wrapper (any BaseModel)
+                if hasattr(raw, "model_dump"):
+                    try:
+                        raw_dict = raw.model_dump(exclude_none=True)
+                        # If this is CallToolResult, extract its 'content' field which is a list
+                        if "content" in raw_dict and isinstance(raw_dict["content"], list):
+                            raw = raw_dict["content"]
+                        else:
+                            return raw_dict
+                    except Exception:
+                        # Fall through to other heuristics
+                        pass
+
+                # Case 3: Legacy: list with TextContent whose .text holds JSON string
                 try:
                     from mcp.types import TextContent as _TC
                 except Exception:
                     _TC = None
                 if (
-                    isinstance(raw, list)
-                    and raw
-                    and (hasattr(raw[0], "text") or (_TC and isinstance(raw[0], _TC)))
+                    isinstance(raw, list) and raw
                 ):
-                    return json.loads(raw[0].text)
+                    first = raw[0]
+                    if hasattr(first, "text"):
+                        return json.loads(first.text)
+                    if isinstance(first, dict) and "text" in first:
+                        return json.loads(first["text"])
+                
+
+                # Unsupported format
                 raise TypeError(f"Unexpected shell.run result type: {type(raw)}")
             raw_result = await session.call_tool("shell.run", shell_payload)
             try:

@@ -52,24 +52,46 @@ async def run_shell(command: str, working_directory_relative_to_repo: Optional[s
                 arguments={"command": command, "cwd": absolute_cwd},
             )
 
-            # mcp_result is a list of content items from FastMCP, e.g., [TextContent(...)]
-            # It could be empty if the tool returns nothing, or if there's an issue
-            # not caught by ToolError during the call_tool execution itself.
-            if not mcp_result or not isinstance(mcp_result, list) or len(mcp_result) == 0:
-                logger.error("MCP tool 'shell.run' returned no content or unexpected format.")
-                # Raise McpError to be caught by the existing McpError handler below
-                raise McpError(ErrorData(code=-32001, message="MCP tool 'shell.run' returned no content"))
+            # Normalize response for FastMCP ≥2.8 (CallToolResult) and older formats
+            def _normalize_shell_run_result(raw):
+                """Return a dict with stdout/stderr/return_code keys."""
+                # Case 0: We already have the desired dict
+                if isinstance(raw, dict) and {"stdout", "stderr", "return_code"}.issubset(raw.keys()):
+                    return raw
 
-            first_content_item = mcp_result[0]
-            
-            # FastMCP typically returns Pydantic models/dicts as JSON string in TextContent
-            if not hasattr(first_content_item, 'text') or not first_content_item.text:
-                logger.error("MCP tool 'shell.run' returned content item without text.")
-                raise McpError(ErrorData(code=-32002, message="MCP tool 'shell.run' returned content item without text"))
+                # Case 1: New FastMCP BaseModel wrapper
+                if hasattr(raw, "model_dump"):
+                    raw_dict = raw.model_dump(exclude_none=True)
+                    if {"stdout", "stderr", "return_code"}.issubset(raw_dict.keys()):
+                        return raw_dict
+                    # If this is CallToolResult, drill down
+                    if "content" in raw_dict and isinstance(raw_dict["content"], list):
+                        raw = raw_dict["content"]
+                    else:
+                        logger.error("Unknown keys in model_dump result: %s", raw_dict.keys())
+                        raise McpError(ErrorData(code=-32003, message="Unexpected shell.run result format"))
 
-            result_json_str = first_content_item.text
-            # This result_json_str should be the JSON representation of _ShellRunOutput from conftest.py
-            result_data = json.loads(result_json_str)
+                # Case 2: List of TextContent
+                if isinstance(raw, list) and raw:
+                    first = raw[0]
+                    try:
+                        if hasattr(first, "text"):
+                            return json.loads(first.text)
+                        if isinstance(first, dict) and "text" in first:
+                            return json.loads(first["text"])
+                    except Exception as e:
+                        logger.error("Failed to decode TextContent text as JSON: %s", e)
+                        raise
+
+                # Unsupported format
+                logger.error("Unhandled shell.run result format: %s", type(raw))
+                raise McpError(ErrorData(code=-32003, message="Unexpected shell.run result format"))
+
+            try:
+                result_data = _normalize_shell_run_result(mcp_result)
+            except Exception as e:
+                raise
+
 
         return RunShellOutput(
             ok=result_data.get("return_code") == 0,

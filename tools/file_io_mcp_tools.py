@@ -43,8 +43,15 @@ async def read_file(path_in_repo: str) -> str:
         # The agent provides paths relative to the repo root.
         # We must resolve the path to be absolute for the mock server.
         async with open_mcp_session() as session:
-            content = await session.call_tool("fs.read", {"path": str(absolute_path_to_read)})
-            logger.debug(f"read_file: Raw content from session.call_tool('fs.read', path='{absolute_path_to_read}'): {content!r} (type: {type(content)})")
+            raw = await session.call_tool("fs.read", {"path": str(absolute_path_to_read)})
+            logger.debug(f"read_file: Raw content from session.call_tool('fs.read', path='{absolute_path_to_read}'): {raw!r} (type: {type(raw)})")
+
+            # Normalize FastMCP ≥2.8 CallToolResult or older list[TextContent]
+            if hasattr(raw, "model_dump"):
+                raw_dict = raw.model_dump(exclude_none=True)
+                raw = raw_dict.get("content", raw)
+
+            content = raw
 
             # Detailed logging for debugging content structure
             if hasattr(content, 'content'):

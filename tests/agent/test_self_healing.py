@@ -91,5 +91,4 @@ async def test_linting_error_self_healing_environment(linting_project):
     assert proc_lint_pass.returncode == 0, f"npm run lint failed after fix: {stderr_pass.decode()}"
 
     # This test confirms the environment is correct for the agent to work in.
-    # The next step is to have the agent perform these fixes.
-    pytest.skip("Skipping full agent test until the agent runner is integrated.")
+    # The next step is to have the agent perform these fixes in an e2e integration test.
