@@ -188,16 +188,17 @@
                 -   [ ] Programmatically edit a `.tsx` file to introduce a TypeScript type error.
                 -   [ ] Prompt the agent to run `npm run build`.
                 -   [ ] Assert that the agent correctly identifies the build failure, uses `diagnose` and `apply_patch` to fix the type error, and successfully verifies the fix by re-running `npm run build`.
+                -   [ ] Note: This test is more complex than the linting test as it requires setting up a Next.js project and handling its build process.
 
--   [x] **3. CLI Smoke Test (`scripts/e2e_smoke.py`):**
-    -   [x] Action: Create the E2E smoke test script.
-    -   [x] File: `scripts/e2e_smoke.py`
-    -   [x] Details:
-        -   [x] Script initializes agent, sets `REPO_DIR` to a temp dir.
-        -   [x] Instructs agent: "Create a new Next.js application."
-        -   [x] The test verifies that the agent's first tool call is `run_shell` with the `npx create-next-app...` command.
-        -   [x] The test asserts that the `REPO_DIR/my-app/package.json` file exists after the agent run is complete.
-    -   [x] Testing: Run `python scripts/e2e_smoke.py`.
+-   [ ] **3. CLI Smoke Test (`scripts/e2e_smoke.py`):**
+    -   [ ] Action: Create the E2E smoke test script.
+    -   [ ] File: `scripts/e2e_smoke.py`
+    -   [ ] Details:
+        -   [ ] Script initializes agent, sets `REPO_DIR` to a temp dir.
+        -   [ ] Instructs agent: "Create a new Next.js application."
+        -   [ ] The test will verify that the agent's first tool call is `run_shell` with the `npx create-next-app...` command.
+        -   [ ] The test will assert that the `REPO_DIR/my-app/package.json` file exists after the agent run is complete.
+    -   [ ] Testing: Run `python scripts/e2e_smoke.py`.
 
 ---
 
