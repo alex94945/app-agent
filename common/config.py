@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     # Logging level for the application (DEBUG, INFO, WARNING, ERROR, CRITICAL).
     LOG_LEVEL: str = "INFO"
 
+    # --- Test-Specific Settings ---
+    # If set, the full E2E test will write its output here instead of a temp dir.
+    E2E_OUTPUT_DIR: Optional[Path] = None
+
     # Host and port for the FastAPI gateway.
     HOST: str = "0.0.0.0"
     PORT: int = 8000

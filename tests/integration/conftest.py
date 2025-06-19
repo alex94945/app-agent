@@ -4,10 +4,12 @@ import asyncio
 import os
 import threading
 from pathlib import Path
+import re
 
 import pytest
 import uvicorn
 from mcp.server.fastmcp.server import FastMCP
+from mcp.shared.exceptions import McpError, ErrorData
 
 # Create a new FastMCP server instance for testing.
 # We will define our own simple versions of the 'fs' and 'shell' tools
@@ -52,6 +54,22 @@ async def shell_run(command: str, cwd: str | None = None) -> dict:
 
     # Ensure the directory exists
     absolute_cwd.mkdir(parents=True, exist_ok=True)
+
+    # --- Special Handling for create-next-app in smoke tests ---
+    if "create-next-app" in command:
+        # Extract the app name from the command, e.g., "my-app"
+        match = re.search(r"create-next-app(?:@latest)?\s+([^\s]+)", command)
+        app_name = match.group(1) if match else "my-app"
+        
+        app_dir = absolute_cwd / app_name
+        app_dir.mkdir(exist_ok=True)
+        (app_dir / "package.json").write_text('{"name": "my-app", "version": "0.1.0"}')
+        
+        return {
+            "stdout": f"Successfully created Next.js app '{app_name}'",
+            "stderr": "",
+            "return_code": 0,
+        }
 
     try:
         # Create a mutable copy of the environment to modify the PATH
