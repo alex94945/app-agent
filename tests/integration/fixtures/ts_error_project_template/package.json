@@ -1,0 +1,13 @@
+{
+    "name": "ts-error-project",
+    "version": "1.0.0",
+    "scripts": {
+      "lint": "eslint src/index.ts"
+    },
+    "devDependencies": {
+      "eslint": "^8.57.0",
+      "@typescript-eslint/eslint-plugin": "^7.13.1",
+      "@typescript-eslint/parser": "^7.13.1",
+      "typescript": "^5.4.5"
+    }
+  }
