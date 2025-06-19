@@ -162,22 +162,24 @@
         -   [x] **Process stderr**: Create an `asyncio.create_task` to drain and log `self._process.stderr`.
         -   [x] **Singleton/Concurrency**: Replace global `lsp_manager` with a keyed registry (e.g., `managers: dict[Path, LspManager]`) for workspace-specific instances to ensure thread-safety and support parallel operations.
         -   [x] **Resource cleanup**: Implement `kill()` fallback after `terminate()` and `wait()` timeout (e.g., `asyncio.TimeoutError` on `self._process.wait(timeout=5)`).
+    - [x] **1.2. Testing**:
+        - [x] Comprehensive integration test (`test_lsp_integration.py`) verifies diagnostics, hover, and definition functionality.
+        - [x] Integration tests for LSP tools in `tests/integration/test_self_healing.py`.
 
--   [ ] **2. Basic Self-Healing Loop in Agent:**
-    -   [ ] Action: Implement self-healing logic.
-    -   [ ] File: `agent/agent_graph.py`
-    -   [ ] Details:
-        -   [ ] **Lint/Build Failure:** Agent uses `run_shell` (MCP) for `npm run lint` / `npm run build`. On failure: agent gets error, LLM plans fix (diff), agent calls `apply_patch`, retries shell command.
-        -   [ ] **LSP Diagnostics:** After `write_file`/`apply_patch`, agent calls `get_diagnostics`. If errors: LLM plans fix, `apply_patch`.
-            -   Current debugging efforts for `apply_patch` (used in both lint/build and LSP-driven self-healing) involve ensuring robust error handling for async MCP calls, correct path/CWD management for `git apply`. The goal is to ensure `apply_patch` reliably functions within integration tests.
-    -   [ ] Testing:
-        -   [ ] **E2E Self-Healing Test: Linting Error**
-            -   [ ] Action: Create an integration test that verifies the agent can fix a TypeScript linting error.
-            -   [ ] File: `tests/integration/test_self_healing.py`
-            -   [ ] Details:
-                -   [ ] Setup a minimal TS project with `eslint` and a file with an unused variable.
-                -   [ ] Prompt the agent to run `npm run lint`.
-                -   [ ] Assert that the agent correctly identifies the failure, uses `diagnose` and `apply_patch` to fix the code, and successfully verifies the fix by re-running `npm run lint`.
+-   [x] **2. Basic Self-Healing Loop in Agent:**
+    -   [x] Action: Implement self-healing logic.
+    -   [x] File: `agent/agent_graph.py`
+    -   [x] Details:
+        -   [x] **Lint/Build Failure:** Agent uses `run_shell` (MCP) for `npm run lint` / `npm run build`. On failure: agent gets error, LLM plans fix (diff), agent calls `apply_patch`, retries shell command.
+        -   [x] **LSP Diagnostics:** After `write_file`/`apply_patch`, agent calls `get_diagnostics`. If errors: LLM plans fix, `apply_patch`.
+    -   [x] Testing:
+        -   [x] **E2E Self-Healing Test: Linting Error**
+            -   [x] Action: Create an integration test that verifies the agent can fix a TypeScript linting error.
+            -   [x] File: `tests/integration/test_self_healing.py`
+            -   [x] Details:
+                -   [x] Setup a minimal TS project with `eslint` and a file with an unused variable.
+                -   [x] Prompt the agent to run `npm run lint`.
+                -   [x] Assert that the agent correctly identifies the failure, uses `diagnose` and `apply_patch` to fix the code, and successfully verifies the fix by re-running `npm run lint`.
         -   [ ] **E2E Self-Healing Test: Next.js Build Error**
             -   [ ] Action: Create an integration test that verifies the agent can fix a Next.js build error.
             -   [ ] File: `tests/integration/test_self_healing.py`
@@ -187,19 +189,25 @@
                 -   [ ] Prompt the agent to run `npm run build`.
                 -   [ ] Assert that the agent correctly identifies the build failure, uses `diagnose` and `apply_patch` to fix the type error, and successfully verifies the fix by re-running `npm run build`.
 
--   [ ] **3. CLI Smoke Test (`scripts/e2e_smoke.py`):**
-    -   [ ] Action: Create the E2E smoke test script.
-    -   [ ] File: `scripts/e2e_smoke.py`
-    -   [ ] Details:
-        -   [ ] Script initializes agent, sets `REPO_DIR` to a temp dir.
-        -   [ ] Instructs agent: "Create a new Next.js application."
-        -   [ ] The test will **verify that the agent's first tool call is `run_shell` with the `npx create-next-app...` command.**
-        -   [ ] The test will then assert that the `REPO_DIR/my-app/package.json` file exists after the agent run is complete.
-    -   [ ] Testing: Run `python scripts/e2e_smoke.py`.
+-   [x] **3. CLI Smoke Test (`scripts/e2e_smoke.py`):**
+    -   [x] Action: Create the E2E smoke test script.
+    -   [x] File: `scripts/e2e_smoke.py`
+    -   [x] Details:
+        -   [x] Script initializes agent, sets `REPO_DIR` to a temp dir.
+        -   [x] Instructs agent: "Create a new Next.js application."
+        -   [x] The test verifies that the agent's first tool call is `run_shell` with the `npx create-next-app...` command.
+        -   [x] The test asserts that the `REPO_DIR/my-app/package.json` file exists after the agent run is complete.
+    -   [x] Testing: Run `python scripts/e2e_smoke.py`.
 
 ---
 
 ### **Phase 2.5: Refactor `tool_executor_step` in `agent/agent_graph.py`**
+
+- [x] **Refactor MCP Tool Tests to Use In-Memory FastMCP**
+    - [x] Migrate `test_shell_mcp_tools.py` to use in-memory FastMCP server
+    - [x] Migrate `test_file_io_mcp_tools.py` to use in-memory FastMCP server
+    - [x] Migrate `test_patch_tools.py` to use in-memory FastMCP server
+    - [x] Update test fixtures in `conftest.py` to support FastMCP testing
 
 - [x] **Refactor `tool_executor_step` for clarity, testability, and maintainability.**
     - [x] Step 1: Extract pure helper functions:
