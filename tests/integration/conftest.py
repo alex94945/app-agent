@@ -46,7 +46,7 @@ def fs_remove(path: str, cwd: str | None = None) -> None:
 
 
 @mcp_server.tool(name="shell.run")
-async def shell_run(command: str, cwd: str | None = None) -> dict:
+async def shell_run(command: str, cwd: str | None = None, stdin: str | None = None) -> dict:
     """Mock tool to run a shell command."""
     repo_dir = Path(os.environ.get("REPO_DIR", "."))
     # The `cwd` passed by the agent is relative to the repo_dir
@@ -63,10 +63,28 @@ async def shell_run(command: str, cwd: str | None = None) -> dict:
         
         app_dir = absolute_cwd / app_name
         app_dir.mkdir(exist_ok=True)
-        (app_dir / "package.json").write_text('{"name": "my-app", "version": "0.1.0"}')
+        (app_dir / "package.json").write_text('{\n  "name": "my-app",\n  "version": "0.1.0",\n  "scripts": {\n    "dev": "next dev",\n    "build": "next build",\n    "start": "next start",\n    "lint": "next lint"\n  }\n}')
+
+        # Create the minimal file structure the agent will look for next
+        src_app_dir = app_dir / "src" / "app"
+        src_app_dir.mkdir(parents=True, exist_ok=True)
+        (src_app_dir / "page.tsx").write_text(
+            "export default function Home() { return <h1>My App</h1>; }"
+        )
         
         return {
             "stdout": f"Successfully created Next.js app '{app_name}'",
+            "stderr": "",
+            "return_code": 0,
+        }
+
+    # --- Special Handling for npm run build in smoke tests --- 
+    # The cwd for 'npm run build' in the test is an absolute path ending in 'hello-world-app'
+    if command == "npm run build" and Path(cwd).name == "hello-world-app": 
+        current_app_name = Path(cwd).name
+        # logger.info(f"Mocking successful 'npm run build' for {current_app_name}") # Removed to avoid NameError
+        return {
+            "stdout": f"> {current_app_name}@0.1.0 build\n> next build\n\nMocked build successful!",
             "stderr": "",
             "return_code": 0,
         }
@@ -101,7 +119,7 @@ async def shell_run(command: str, cwd: str | None = None) -> dict:
             cwd=str(absolute_cwd),  # Must be a string
             env=env,  # Pass the modified environment
         )
-        stdout, stderr = await proc.communicate()
+        stdout, stderr = await proc.communicate(input=stdin.encode() if stdin else None)
         return {
             "stdout": stdout.decode(),
             "stderr": stderr.decode(),
