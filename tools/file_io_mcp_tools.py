@@ -46,18 +46,21 @@ async def read_file(path_in_repo: str) -> str:
             raw = await session.call_tool("fs.read", {"path": str(absolute_path_to_read)})
             logger.debug(f"read_file: Raw content from session.call_tool('fs.read', path='{absolute_path_to_read}'): {raw!r} (type: {type(raw)})")
 
-            # Robustly parse the response from fastmcp, which can be a CallToolResult
-            # or other types. The actual text is nested in result.content[0].text
-            if hasattr(raw, 'content') and isinstance(raw.content, list) and len(raw.content) > 0:
-                first_content_item = raw.content[0]
-                if hasattr(first_content_item, 'text'):
-                    return first_content_item.text
-                # Fallback for dicts, e.g. from older versions or different MCP servers
-                elif isinstance(first_content_item, dict) and 'text' in first_content_item:
-                    return first_content_item['text']
-            else:
-                logger.warning(f"read_file: MCP response format not recognized or content is empty: {raw!r}. Returning empty string.")
-                return ""
+            # The mock server for fs.read returns a string, which FastMCP wraps in [TextContent(text=...)]
+            # A real server might return a CallToolResult object. We need to handle both.
+            content_list = []
+            if hasattr(raw, 'content') and isinstance(raw.content, list): # It's a CallToolResult
+                content_list = raw.content
+            elif isinstance(raw, list): # It's already the list of content blocks
+                content_list = raw
+
+            if content_list:
+                first_item = content_list[0]
+                if hasattr(first_item, 'text'):
+                    return first_item.text
+
+            logger.warning(f"read_file: Could not extract text from MCP response: {raw!r}. Returning empty string.")
+            return ""
     except ToolError as e:
         # FastMCP client wraps server-side McpError in a ToolError.
         # We format this to match the expected test assertion.

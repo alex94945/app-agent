@@ -211,14 +211,10 @@ async def test_fix_typescript_lint_error(
     # --- 2. Execute the agent graph within a correctly patched context ---
     final_state = None
     # Patch open_mcp_session in all modules where it is imported and used.
-    with patch('tools.shell_mcp_tools.open_mcp_session') as mock_shell_mcp, \
-         patch('tools.file_io_mcp_tools.open_mcp_session') as mock_file_io_mcp, \
-         patch('tools.patch_tools.open_mcp_session') as mock_patch_mcp:
+    with patch('tools.shell_mcp_tools.open_mcp_session') as mock_shell_mcp:
 
         # Configure all mocks to return the same in-memory client
         mock_shell_mcp.return_value.__aenter__.return_value = patch_client
-        mock_file_io_mcp.return_value.__aenter__.return_value = patch_client
-        mock_patch_mcp.return_value.__aenter__.return_value = patch_client
 
         thread_id = "test_self_healing_thread"
         initial_state = {"messages": [HumanMessage(content=f"Please fix the linting errors in the '{PROJECT_SUBDIR_NAME}' project.")]}
@@ -299,13 +295,9 @@ async def test_fix_nextjs_build_error(
 
     # --- 2. Execute the agent graph ---
     final_state = None
-    with patch('tools.shell_mcp_tools.open_mcp_session') as mock_shell_mcp, \
-         patch('tools.file_io_mcp_tools.open_mcp_session') as mock_file_io_mcp, \
-         patch('tools.patch_tools.open_mcp_session') as mock_patch_mcp:
+    with patch('tools.shell_mcp_tools.open_mcp_session') as mock_shell_mcp:
 
         mock_shell_mcp.return_value.__aenter__.return_value = patch_client
-        mock_file_io_mcp.return_value.__aenter__.return_value = patch_client
-        mock_patch_mcp.return_value.__aenter__.return_value = patch_client
 
         thread_id = "test_nextjs_build_error_thread" # Unique thread_id
         initial_state = {"messages": [HumanMessage(content=f"Please fix the build errors in the '{NEXTJS_PROJECT_SUBDIR_NAME}' project.")]}
