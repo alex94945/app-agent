@@ -36,36 +36,26 @@ async def apply_patch(file_path_in_repo: str, diff_content: str) -> ApplyPatchOu
             diff_content += "\n"
 
         # The LLM can generate unreliable index lines; remove them to improve robustness.
-        diff_content = re.sub(r"^index .*\n", "", diff_content, flags=re.MULTILINE)
-        
-        # Determine the correct working directory and patch stripping level.
-        path_parts = Path(file_path_in_repo).parts
-        project_subdirectory = None
-        p_level = 0
-        if len(path_parts) > 1:
-            project_subdirectory = path_parts[0]
-            # The diff paths are relative to the repo root, e.g., "my-app/src/file.ts".
-            # When we run git apply inside "my-app", we need to strip "my-app/"
-            p_level = 1
-        
-        logger.info(f"Determined project_subdirectory: '{project_subdirectory}', p-level: {p_level}")
+        diff_content = re.sub(r"^index .*$\n", "", diff_content, flags=re.MULTILINE)
+
+        # Always run git commands from the repository root and use -p1 strip level.
+        git_cwd = None  # Run at repo root
+        p_level = 1
 
         # 1. Make git aware of all files, including new ones, and stage their content.
-        # This command must run inside the subdirectory where the .git folder is.
         add_result = await run_shell.ainvoke({
-            "command": "git add --all", 
-            "working_directory_relative_to_repo": project_subdirectory
+            "command": "git add --all",
+            "working_directory_relative_to_repo": git_cwd
         })
         if not add_result.ok:
             return ApplyPatchOutput(ok=False, message=f"Failed to stage files for patching: {add_result.stderr}")
 
         # 2. Dry-run the patch via stdin to check for validity.
-        # Use -p<n> to strip leading path components from the diff.
         check_command = f"git apply -p{p_level} --check --whitespace=nowarn -"
         check_result = await run_shell.ainvoke({
-            "command": check_command, 
-            "stdin": diff_content, 
-            "working_directory_relative_to_repo": project_subdirectory
+            "command": check_command,
+            "stdin": diff_content,
+            "working_directory_relative_to_repo": git_cwd
         })
 
         if not check_result.ok:
@@ -74,9 +64,9 @@ async def apply_patch(file_path_in_repo: str, diff_content: str) -> ApplyPatchOu
         # 3. Apply the patch for real using stdin, updating the index and working directory.
         apply_command = f"git apply -p{p_level} --index --verbose --whitespace=nowarn -"
         apply_result = await run_shell.ainvoke({
-            "command": apply_command, 
-            "stdin": diff_content, 
-            "working_directory_relative_to_repo": project_subdirectory
+            "command": apply_command,
+            "stdin": diff_content,
+            "working_directory_relative_to_repo": git_cwd
         })
 
         if not apply_result.ok:

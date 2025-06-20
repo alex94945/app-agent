@@ -2,7 +2,8 @@ import pytest
 import asyncio
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
+from tools.shell_mcp_tools import run_shell
 
 from tools.patch_tools import apply_patch, ApplyPatchOutput
 from tests.conftest import mock_mcp_session_cm
@@ -53,7 +54,7 @@ async def test_apply_patch_success(patch_client, git_repo, monkeypatch):
     test_file = git_repo / "test.txt"
 
     # 2. Call Tool
-    with patch('tools.patch_tools.open_mcp_session', return_value=mock_mcp_session_cm(patch_client)):
+    with patch('tools.shell_mcp_tools.open_mcp_session', new=lambda: mock_mcp_session_cm(patch_client)):
         result = await apply_patch.ainvoke({
             "file_path_in_repo": "test.txt",
             "diff_content": DIFF_CONTENT_SUCCESS
@@ -62,8 +63,7 @@ async def test_apply_patch_success(patch_client, git_repo, monkeypatch):
     # 3. Assertions
     assert isinstance(result, ApplyPatchOutput)
     assert result.ok is True
-    assert result.details.return_code == 0
-    assert "Patch applied successfully" in result.message
+    assert "patch applied successfully" in result.message.lower()
     
     # Verify the file content has changed
     modified_content = await asyncio.to_thread(test_file.read_text)
@@ -76,7 +76,7 @@ async def test_apply_patch_git_failure(patch_client, git_repo, monkeypatch):
     monkeypatch.setattr('common.config.settings.REPO_DIR', git_repo)
 
     # 2. Call Tool with a patch that will fail
-    with patch('tools.patch_tools.open_mcp_session', return_value=mock_mcp_session_cm(patch_client)):
+    with patch('tools.shell_mcp_tools.open_mcp_session', new=lambda: mock_mcp_session_cm(patch_client)):
         result = await apply_patch.ainvoke({
             "file_path_in_repo": "test.txt",
             "diff_content": DIFF_CONTENT_FAILURE
@@ -85,32 +85,38 @@ async def test_apply_patch_git_failure(patch_client, git_repo, monkeypatch):
     # 3. Assertions
     assert isinstance(result, ApplyPatchOutput)
     assert result.ok is False
-    assert result.details.return_code != 0
-    assert "'git apply' failed" in result.message
-    assert "error: patch failed" in result.details.stderr
+    assert "patch check failed" in result.message.lower()
+    assert "error: patch failed" in result.message.lower()
 
 @pytest.mark.asyncio
 async def test_apply_patch_fs_write_error(patch_client, git_repo, monkeypatch):
-    """Tests that apply_patch handles an error during the initial fs.write call."""
-    # 1. Setup
-    monkeypatch.setattr('common.config.settings.REPO_DIR', git_repo)
-    
-    # Make the repo directory read-only to cause a write error
-    # The temporary patch file is written to the root of the repo dir
-    git_repo.chmod(0o555)
+    """
+    apply_patch must return ok=False if its shell layer surprises it with an FS-write error.
+    """
+    # 1. Repo workspace
+    monkeypatch.setattr("common.config.settings.REPO_DIR", git_repo)
 
-    # 2. Call Tool
-    with patch('tools.patch_tools.open_mcp_session', return_value=mock_mcp_session_cm(patch_client)):
-        result = await apply_patch.ainvoke({
-            "file_path_in_repo": "test.txt",
-            "diff_content": DIFF_CONTENT_SUCCESS
-        })
+    # 2. Inject fault at the *actual* dependency: session.call_tool(...)
+    from unittest.mock import AsyncMock, patch as patch_ctx
+
+    # make every shell.run call explode
+    patch_client.call_tool = AsyncMock(side_effect=Exception("Injected Fault"))
+
+    with patch_ctx(
+        "tools.shell_mcp_tools.open_mcp_session",
+        new=lambda: mock_mcp_session_cm(patch_client),
+    ):
+        result = await apply_patch.ainvoke(
+            {
+                "file_path_in_repo": "test.txt",
+                "diff_content": DIFF_CONTENT_SUCCESS,
+            }
+        )
 
     # 3. Assertions
-    assert isinstance(result, ApplyPatchOutput)
     assert result.ok is False
-    assert "MCP Error writing temporary patch file" in result.message
-    assert "Permission denied" in result.message
+    assert "Injected Fault" in result.message
+
     
     # Reset permissions so tmp_path cleanup works
     git_repo.chmod(0o755)

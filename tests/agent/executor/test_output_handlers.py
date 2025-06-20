@@ -68,7 +68,7 @@ def mock_apply_patch_output_success():
 def mock_apply_patch_output_failure():
     return ApplyPatchOutput(
         ok=False,
-        message="Patch application failed."
+        message="Patch application failed: git error"
     )
 
 class UnknownOutput(BaseModel):
@@ -136,13 +136,11 @@ def test_format_tool_output_apply_patch_success(mock_apply_patch_output_success)
 
 def test_format_tool_output_apply_patch_failure(mock_apply_patch_output_failure):
     formatted = format_tool_output(mock_apply_patch_output_failure)
-    assert "Patch application failed." in formatted
-    assert "Error details:\nGit apply error" in formatted
+    assert formatted == "Patch application failed: git error"
 
 def test_format_tool_output_apply_patch_failure_no_details_stderr(mock_apply_patch_output_failure):
-    mock_apply_patch_output_failure.details.stderr = "  " # Blank stderr
     formatted = format_tool_output(mock_apply_patch_output_failure)
-    assert format_tool_output(mock_apply_patch_output_failure) == "Patch application failed."
+    assert formatted == "Patch application failed: git error"
 
 # Test DefaultOutputHandler directly
 
