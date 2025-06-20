@@ -41,6 +41,19 @@ pip install -r requirements.txt
 pytest
 ```
 
+### Integration Test Fixtures
+
+The directory `tests/integration/fixtures/` is excluded from version control to keep the repository lightweight and avoid committing large, generated, or vendor files (such as `node_modules`).
+
+**To run integration tests, you must obtain the required fixtures:**
+
+- Ask another team member to share the contents of `tests/integration/fixtures/`
+- Or, download them from your team's shared storage location (if available)
+- If you are unsure how to obtain the fixtures, please contact the project maintainers
+
+> **Note:** If you are a new contributor or CI runner, integration tests will fail without these fixtures present. Please ensure the `tests/integration/fixtures/` directory exists and is populated before running integration tests.
+
+
 All tool tests use in-memory FastMCP servers for speed and reliability.
 
 ### Example: Running the Agent

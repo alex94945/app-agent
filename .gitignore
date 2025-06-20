@@ -48,10 +48,12 @@ yarn-error.log*
 # Local development
 workspace_dev/
 .windsurf/
-.gitingest
 digest.txt
 
 # Logs
 logs/
 *.log
 .tmp.apply_patch.*.patch
+
+# Integration test fixtures (large, generated, not tracked)
+tests/integration/fixtures/*
