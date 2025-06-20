@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 from fastmcp import Client, FastMCP
 from pydantic import BaseModel, Field
 from mcp.shared.exceptions import McpError, ErrorData
+from langgraph.graph.graph import CompiledGraph
 
 # Custom MCP Error Codes (integers)
 RESOURCE_NOT_FOUND_CODE = -32010
@@ -91,6 +92,16 @@ async def shell_client() -> AsyncIterator[Client]:
     server = build_shell_tools_server()
     async with Client(server) as c: # Uses in-memory FastMCPTransport
         yield c
+
+
+@pytest.fixture(scope="session")
+def agent_graph_fixture() -> CompiledGraph:
+    """
+    Compile the agent graph once per session for performance.
+    This fixture is available to all tests.
+    """
+    from agent.agent_graph import build_graph
+    return build_graph()
 
 
 # --- Pydantic Schema for 'fs.list_dir' tool output entries ---

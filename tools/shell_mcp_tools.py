@@ -20,6 +20,10 @@ class RunShellInput(BaseModel):
         default=None, 
         description="The directory within the repo to run the command from. Defaults to the repo root."
     )
+    stdin: Optional[str] = Field(
+        default=None,
+        description="Content to be passed to the command's standard input."
+    )
 
 # --- Pydantic Schema for Tool Output ---
 
@@ -33,7 +37,7 @@ class RunShellOutput(BaseModel):
 # --- Tool Implementation ---
 
 @tool(args_schema=RunShellInput)
-async def run_shell(command: str, working_directory_relative_to_repo: Optional[str] = None) -> RunShellOutput:
+async def run_shell(command: str, working_directory_relative_to_repo: Optional[str] = None, stdin: Optional[str] = None) -> RunShellOutput:
     """
     Executes a shell command in the repository workspace.
     Returns a dictionary with stdout, stderr, and the return code.
@@ -45,12 +49,11 @@ async def run_shell(command: str, working_directory_relative_to_repo: Optional[s
         absolute_cwd = str(repo_dir)
         if working_directory_relative_to_repo:
             absolute_cwd = str(repo_dir / working_directory_relative_to_repo)
+        mcp_args = {"command": command, "cwd": absolute_cwd}
+        if stdin is not None:
+            mcp_args["stdin"] = stdin
         async with open_mcp_session() as session:
-            # FastMCP shell.run expects a "cwd" argument for the working directory.
-            mcp_result = await session.call_tool(
-                "shell.run",
-                arguments={"command": command, "cwd": absolute_cwd},
-            )
+            mcp_result = await session.call_tool("shell.run", arguments=mcp_args)
 
             # Normalize response for FastMCP ≥2.8 (CallToolResult) and older formats
             def _normalize_shell_run_result(raw):

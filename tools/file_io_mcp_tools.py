@@ -46,41 +46,17 @@ async def read_file(path_in_repo: str) -> str:
             raw = await session.call_tool("fs.read", {"path": str(absolute_path_to_read)})
             logger.debug(f"read_file: Raw content from session.call_tool('fs.read', path='{absolute_path_to_read}'): {raw!r} (type: {type(raw)})")
 
-            # Normalize FastMCP ≥2.8 CallToolResult or older list[TextContent]
-            if hasattr(raw, "model_dump"):
-                raw_dict = raw.model_dump(exclude_none=True)
-                raw = raw_dict.get("content", raw)
-
-            content = raw
-
-            # Detailed logging for debugging content structure
-            if hasattr(content, 'content'):
-                if content.content:
-                    logger.debug(f"read_file: content.content is present. Type: {type(content.content)}, Value: {content.content}")
-                    if isinstance(content.content, list):
-                        logger.debug(f"read_file: content.content is a list. Length: {len(content.content)}")
-                        if len(content.content) == 1:
-                            logger.debug(f"read_file: content.content has 1 element. Element type: {type(content.content[0])}")
-                        else:
-                            logger.debug(f"read_file: content.content list length is not 1.")
-                    else:
-                        logger.debug(f"read_file: content.content is not a list.")
-                else:
-                    logger.debug(f"read_file: content.content is None or empty.")
+            # Robustly parse the response from fastmcp, which can be a CallToolResult
+            # or other types. The actual text is nested in result.content[0].text
+            if hasattr(raw, 'content') and isinstance(raw.content, list) and len(raw.content) > 0:
+                first_content_item = raw.content[0]
+                if hasattr(first_content_item, 'text'):
+                    return first_content_item.text
+                # Fallback for dicts, e.g. from older versions or different MCP servers
+                elif isinstance(first_content_item, dict) and 'text' in first_content_item:
+                    return first_content_item['text']
             else:
-                logger.debug(f"read_file: content does not have attribute 'content'.")
-
-            if isinstance(content, list) and len(content) > 0 and hasattr(content[0], 'text'):
-                # Content is expected to be a list, e.g., [TextContent(...)]
-                # We extract the .text attribute from the first element.
-                processed_content = content[0].text
-                logger.debug(f"read_file: Extracted text from content[0].text: {processed_content!r}")
-                return processed_content
-            elif isinstance(content, str): # Should not happen based on docs, but as a fallback
-                logger.warning(f"read_file: session.call_tool unexpectedly returned str, not List[Content]. Using as is.")
-                return content
-            else:
-                logger.warning(f"read_file: session.call_tool returned unexpected content format: {content!r}. Returning empty string.")
+                logger.warning(f"read_file: MCP response format not recognized or content is empty: {raw!r}. Returning empty string.")
                 return ""
     except ToolError as e:
         # FastMCP client wraps server-side McpError in a ToolError.
@@ -100,10 +76,12 @@ async def write_file(path_in_repo: str, content: str) -> WriteFileOutput:
     The path should be relative to the repository root.
     """
     logger.info(f"Tool: write_file called for path: {path_in_repo}")
+    absolute_path_to_write = Path(settings.REPO_DIR) / path_in_repo
+    logger.debug(f"write_file: Computed absolute_path_to_write: '{absolute_path_to_write}'")
     try:
         async with open_mcp_session() as session:
             await session.call_tool("fs.write",
-                                    {"path": path_in_repo, "content": content})
+                                    {"path": str(absolute_path_to_write), "content": content})
             success_message = f"Successfully wrote {len(content)} bytes to '{path_in_repo}'."
             logger.info(success_message)
             return WriteFileOutput(ok=True, path=path_in_repo, message=success_message)

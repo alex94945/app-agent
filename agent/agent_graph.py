@@ -297,22 +297,25 @@ def build_graph():
             logger.warning(f"Verification failed for tool '{tool_name_to_verify}'. Fix cycle remains or may escalate to max attempts.")
 
         # Log the verification tool call
-        state["tool_call_log"].append({
+        log_entry = {
             "id": verification_tool_call_id,
             "name": tool_name_to_verify,
             "args": tool_args_to_verify,
             "status": "ok" if succeeded else "error",
             "result": output_content,
             "source": "verify_node"
-        })
+        }
+        state["tool_call_log"].append(log_entry)
 
-        tool_message = ToolMessage(content=output_content, tool_call_id=verification_tool_call_id)
+        # Use a SystemMessage to inform the LLM of the verification result, as this is not a direct tool response.
+        system_message_content = f"<verification_result tool_name='{tool_name_to_verify}' success='{succeeded}'>\n{output_content}\n</verification_result>"
+        system_message = SystemMessage(content=system_message_content)
         updated_fix_cycle_state = fix_tracker.to_state()
         logger.info(f"Exiting verify_node. FixCycleTracker state: {updated_fix_cycle_state}")
         
         # The needs_verification flag is now internal to FixCycleTracker's state and its effect on routing.
         # We return the full tracker state.
-        return {"messages": [tool_message], "fix_cycle_tracker_state": updated_fix_cycle_state, "tool_call_log": state["tool_call_log"]}
+        return {"messages": [system_message], "fix_cycle_tracker_state": updated_fix_cycle_state, "tool_call_log": state["tool_call_log"]}
 
     workflow.add_node("verify_step", verify_node)
 

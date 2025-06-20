@@ -4,6 +4,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Optional
 
 # Determine the project root directory (assuming this file is in project_root/common/)
 # This allows .env to be loaded from the project root.

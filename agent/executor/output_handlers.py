@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from tools.shell_mcp_tools import RunShellOutput
 from tools.file_io_mcp_tools import WriteFileOutput
-from tools.patch_tools import ApplyPatchOutput, ShellRunResult # ShellRunResult holds the details for ApplyPatchOutput
+from tools.patch_tools import ApplyPatchOutput
 
 # --- Output Handler Protocol & Implementations ---
 
@@ -81,9 +81,7 @@ class ApplyPatchOutputHandler(OutputHandler):
         return output.ok
 
     def format_output(self, output: ApplyPatchOutput) -> str:
-        # The message field contains a summary. If not ok and details exist, append stderr.
-        if not output.ok and output.details and output.details.stderr and output.details.stderr.strip():
-            return f"{output.message}\nError details:\n{output.details.stderr.strip()}"
+        # The message field now contains all necessary success or failure info.
         return output.message
 
 

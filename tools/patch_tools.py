@@ -1,169 +1,93 @@
 import logging
-import uuid
-import json
-from typing import Optional
-
+import re
+from pathlib import Path
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
-
-from pathlib import Path
-from common.config import settings
-from common.mcp_session import open_mcp_session
-from mcp.shared.exceptions import McpError
-from mcp.types import TextContent
-from fastmcp.exceptions import ToolError
+from tools.shell_mcp_tools import run_shell
 
 logger = logging.getLogger(__name__)
 
 
-class ShellRunResult(BaseModel):
-    stdout: str
-    stderr: str
-    return_code: int
-
-
 class ApplyPatchOutput(BaseModel):
     ok: bool = Field(description="True if the patch was applied successfully, False otherwise.")
-    file_path_hint: str = Field(description="The file path hint provided in the input.")
     message: str = Field(description="A summary message indicating success or failure.")
-    details: Optional[ShellRunResult] = Field(default=None, description="Detailed output from the git apply command if it was run.")
 
 
 class ApplyPatchInput(BaseModel):
     """Input for the apply_patch tool."""
     file_path_in_repo: str = Field(
-        description="The path to the file to be patched. This is often descriptive, as the patch content itself specifies the file paths."
+        description="A representative file path for the patch, used for logging. The patch content itself determines which files are modified.",
     )
-    diff_content: str = Field(description="The content of the diff/patch to apply.")
+    diff_content: str = Field(description="The content of the diff/patch to apply, in unidiff format.")
 
 
 @tool(args_schema=ApplyPatchInput)
 async def apply_patch(file_path_in_repo: str, diff_content: str) -> ApplyPatchOutput:
     """
-    Applies a patch to files in the repository workspace using `git apply`.
-
-    Simplified implementation: stream the diff content to `git apply -` via stdin
-    in a single `shell.run` call, requesting structured JSON output.
+    Applies a patch to files in the repository workspace using a robust, git-based workflow.
+    This tool first stages all files (including new ones), then checks the patch,
+    and finally applies it. It uses stdin to avoid temporary files.
     """
-
     logger.info(f"Tool: apply_patch called for file hint: '{file_path_in_repo}'")
-    logger.debug(f"Patch content received for '{file_path_in_repo}':\n{diff_content}")
 
     try:
-        async with open_mcp_session() as session:
-            # Stream diff via stdin, ask for JSON response
-            shell_payload = {
-                "command": "git apply --verbose --allow-empty --whitespace=nowarn -",
-                "stdin": diff_content if diff_content.endswith("\n") else diff_content + "\n",
-                "json": True,
-                "cwd": str(settings.REPO_DIR),
-            }
-            logger.info("Applying patch via stdin with git apply …")
+        # Ensure diff content ends with a newline for git apply robustness
+        if not diff_content.endswith("\n"):
+            diff_content += "\n"
 
-            def _normalize_shell_run_result(raw) -> dict:
-                """Handle both new (dict) and legacy ([TextContent]) responses."""
-                # Case 1: Received a plain dict already
-                if isinstance(raw, dict):
-                    # If it already looks like ShellRunResult, return as-is
-                    if {"stdout", "stderr", "return_code"}.issubset(raw.keys()):
-                        return raw
-                    # If it is CallToolResult dumped to dict, dig into its content
-                    if "content" in raw and isinstance(raw["content"], list):
-                        raw = raw["content"]  # fall through to list handling
-                    else:
-                        raise TypeError(
-                            "Unexpected dict keys in shell.run result: " + ",".join(raw.keys())
-                        )
+        # The LLM can generate unreliable index lines; remove them to improve robustness.
+        diff_content = re.sub(r"^index .*\n", "", diff_content, flags=re.MULTILINE)
+        
+        # Determine the correct working directory and patch stripping level.
+        path_parts = Path(file_path_in_repo).parts
+        project_subdirectory = None
+        p_level = 0
+        if len(path_parts) > 1:
+            project_subdirectory = path_parts[0]
+            # The diff paths are relative to the repo root, e.g., "my-app/src/file.ts".
+            # When we run git apply inside "my-app", we need to strip "my-app/"
+            p_level = 1
+        
+        logger.info(f"Determined project_subdirectory: '{project_subdirectory}', p-level: {p_level}")
 
-                # Case 2: FastMCP 2.x `CallToolResult` wrapper (any BaseModel)
-                if hasattr(raw, "model_dump"):
-                    try:
-                        raw_dict = raw.model_dump(exclude_none=True)
-                        # If this is CallToolResult, extract its 'content' field which is a list
-                        if "content" in raw_dict and isinstance(raw_dict["content"], list):
-                            raw = raw_dict["content"]
-                        else:
-                            return raw_dict
-                    except Exception:
-                        # Fall through to other heuristics
-                        pass
+        # 1. Make git aware of all files, including new ones, and stage their content.
+        # This command must run inside the subdirectory where the .git folder is.
+        add_result = await run_shell.ainvoke({
+            "command": "git add --all", 
+            "working_directory_relative_to_repo": project_subdirectory
+        })
+        if not add_result.ok:
+            return ApplyPatchOutput(ok=False, message=f"Failed to stage files for patching: {add_result.stderr}")
 
-                # Case 3: Legacy: list with TextContent whose .text holds JSON string
-                try:
-                    from mcp.types import TextContent as _TC
-                except Exception:
-                    _TC = None
-                if (
-                    isinstance(raw, list) and raw
-                ):
-                    first = raw[0]
-                    if hasattr(first, "text"):
-                        return json.loads(first.text)
-                    if isinstance(first, dict) and "text" in first:
-                        return json.loads(first["text"])
-                
+        # 2. Dry-run the patch via stdin to check for validity.
+        # Use -p<n> to strip leading path components from the diff.
+        check_command = f"git apply -p{p_level} --check --whitespace=nowarn -"
+        check_result = await run_shell.ainvoke({
+            "command": check_command, 
+            "stdin": diff_content, 
+            "working_directory_relative_to_repo": project_subdirectory
+        })
 
-                # Unsupported format
-                raise TypeError(f"Unexpected shell.run result type: {type(raw)}")
-            raw_result = await session.call_tool("shell.run", shell_payload)
-            try:
-                result = _normalize_shell_run_result(raw_result)
-            except Exception as e:
-                logger.error(f"Unable to parse shell.run response: {e}")
-                return ApplyPatchOutput(
-                    ok=False,
-                    file_path_hint=file_path_in_repo,
-                    message="Invalid response from shell.run for git apply",
-                )
+        if not check_result.ok:
+            return ApplyPatchOutput(ok=False, message=f"Patch check failed: {check_result.stderr}")
 
-            # `json=True` means `result` should already be a plain dict
-            if not isinstance(result, dict):
-                logger.error("shell.run did not return a JSON dict as expected")
-                return ApplyPatchOutput(
-                    ok=False,
-                    file_path_hint=file_path_in_repo,
-                    message="Invalid response from shell.run for git apply",
-                )
+        # 3. Apply the patch for real using stdin, updating the index and working directory.
+        apply_command = f"git apply -p{p_level} --index --verbose --whitespace=nowarn -"
+        apply_result = await run_shell.ainvoke({
+            "command": apply_command, 
+            "stdin": diff_content, 
+            "working_directory_relative_to_repo": project_subdirectory
+        })
 
-            shell_result = ShellRunResult(**result)
+        if not apply_result.ok:
+            return ApplyPatchOutput(ok=False, message=f"Patch application failed: {apply_result.stderr}")
 
-            if shell_result.return_code != 0:
-                # Legacy compatibility: map permission errors to old fs.write failure message
-                if "Permission denied" in (shell_result.stderr or ""):
-                    legacy_msg = "MCP Error writing temporary patch file"
-                    return ApplyPatchOutput(
-                        ok=False,
-                        file_path_hint=file_path_in_repo,
-                        message=f"{legacy_msg}: {shell_result.stderr.strip()}",
-                        details=shell_result,
-                    )
-                logger.error(
-                    f"'git apply' failed for '{file_path_in_repo}'. Return code: {shell_result.return_code}. Stderr: {shell_result.stderr}"
-                )
-                return ApplyPatchOutput(
-                    ok=False,
-                    file_path_hint=file_path_in_repo,
-                    message=f"'git apply' failed for {file_path_in_repo}. Error: {shell_result.stderr or 'Unknown error'}",
-                    details=shell_result,
-                )
-
-            logger.info("Patch applied successfully.")
-            return ApplyPatchOutput(
-                ok=True,
-                file_path_hint=file_path_in_repo,
-                message="Patch applied successfully.",
-                details=shell_result,
-            )
-
-    except (McpError, ToolError) as e:
-        err_msg = getattr(e, "message", str(e))
-        logger.error(f"MCP/Tool error during apply_patch: {err_msg}")
-        return ApplyPatchOutput(ok=False, file_path_hint=file_path_in_repo, message=err_msg)
+        logger.info(f"Patch applied successfully to '{file_path_in_repo}'.")
+        return ApplyPatchOutput(ok=True, message=f"Patch applied successfully to '{file_path_in_repo}'.")
     except Exception as e:
         logger.error(f"Unexpected error during apply_patch: {e}", exc_info=True)
         return ApplyPatchOutput(
             ok=False,
-            file_path_hint=file_path_in_repo,
             message=f"Unexpected error: {e}",
         )
 

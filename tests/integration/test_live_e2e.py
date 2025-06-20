@@ -1,11 +1,10 @@
-# tests/integration/test_full_e2e.py
+# tests/integration/test_live_e2e.py
 
 import pytest
 import logging
-import subprocess
-import shutil
 from pathlib import Path
 import sys
+import subprocess
 
 # --- Add project root to sys.path to allow imports ---
 project_root = Path(__file__).parent.parent.resolve()
@@ -19,45 +18,32 @@ from tools.shell_mcp_tools import run_shell
 logger = logging.getLogger(__name__)
 
 @pytest.fixture(scope="function")
-def e2e_repo_dir(tmp_path: Path) -> Path:
+def live_e2e_repo_dir(tmp_path: Path, monkeypatch) -> Path:
     """
-    Provides the repository directory for the E2E test.
-
-    If the `E2E_OUTPUT_DIR` setting is configured, it uses that directory
-    and cleans it beforehand. Otherwise, it uses a temporary directory.
+    Provides a clean, temporary directory for the live E2E test to run in.
+    This fixture ensures the agent operates in an isolated environment.
     """
-    settings = get_settings()
-    if settings.E2E_OUTPUT_DIR:
-        repo_dir = settings.E2E_OUTPUT_DIR.resolve()
-        logger.info(f"Using persistent directory for E2E test output: {repo_dir}")
-        if repo_dir.exists():
-            shutil.rmtree(repo_dir)
-        repo_dir.mkdir(parents=True, exist_ok=True)
-    else:
-        repo_dir = tmp_path / "e2e_repo"
-        repo_dir.mkdir()
-        logger.info(f"Using temporary directory for E2E test output: {repo_dir}")
-
-    # Crucially, initialize a git repository so `git apply` can work.
-    # This must be done for both persistent and temporary directories.
-    subprocess.run(["git", "init"], cwd=repo_dir, check=True, capture_output=True)
+    repo_dir = tmp_path / "live_e2e_repo"
+    repo_dir.mkdir()
+    monkeypatch.setattr(get_settings(), 'REPO_DIR', repo_dir)
+    logger.info(f"Live E2E test running in: {repo_dir}")
     return repo_dir
 
-@pytest.mark.e2e_full
-@pytest.mark.timeout(600) # 10-minute timeout for this slow test
+
+@pytest.mark.live_e2e
+@pytest.mark.timeout(900)  # 15-minute timeout for this very slow test
 @pytest.mark.asyncio
-async def test_full_e2e_hello_world(agent_graph_fixture, e2e_repo_dir: Path, monkeypatch):
+async def test_live_full_e2e_hello_world(agent_graph_fixture, live_e2e_repo_dir: Path):
     """
     Tests the full, unmocked agent pipeline on a simple scaffolding and
-    editing task. This test uses the real LLM and real tool execution.
-    It is slow and should be run selectively (e.g., in a nightly CI job).
+    editing task. This test uses the real LLM and the real `run_shell` tool
+    to execute `npx create-next-app`.
+    
+    It is VERY SLOW and should be run selectively.
     """
-    logger.info("--- Starting Full End-to-End Test: Hello World ---")
+    logger.info("--- Starting LIVE End-to-End Test: Hello World ---")
 
-    # 1. Setup: Use a temporary directory for the workspace
-    monkeypatch.setattr(get_settings(), 'REPO_DIR', e2e_repo_dir)
-
-    # The agent graph fixture is already compiled and ready
+    # 1. Setup: The agent graph is real, and REPO_DIR is set. No mocks are used.
     agent_graph = agent_graph_fixture
 
     # 2. Define the multi-step prompt
@@ -65,11 +51,11 @@ async def test_full_e2e_hello_world(agent_graph_fixture, e2e_repo_dir: Path, mon
         "Create a new Next.js application called 'hello-world-app'. "
         "After it's created, modify the home page to display the text 'Hello, World!'."
     )
-    thread_id = "e2e-full-hello-world"
+    thread_id = "live-e2e-hello-world"
     initial_state = {"messages": [HumanMessage(content=prompt)]}
     config = {"configurable": {"thread_id": thread_id}}
 
-    # 3. Run the agent (this is the slow part)
+    # 3. Run the agent (this is the very slow part)
     logger.info(f"Invoking agent for prompt: '{prompt}'")
     final_state = await agent_graph.ainvoke(initial_state, config)
     logger.info("Agent invocation complete.")
@@ -79,14 +65,12 @@ async def test_full_e2e_hello_world(agent_graph_fixture, e2e_repo_dir: Path, mon
 
     # Assert 4.1: The agent completed successfully
     assert final_state is not None, "Agent run did not complete."
-    final_messages = final_state.get("messages", [])
-    assert final_messages, "Agent did not produce a final state with messages."
-    last_message = final_messages[-1]
+    last_message = final_state.get("messages", [])[-1]
     assert "error" not in last_message.content.lower(), f"Agent run ended with an error: {last_message.content}"
     assert "hello, world" in last_message.content.lower(), "Agent's final message did not confirm the change."
 
     # Assert 4.2: The project directory and key files exist
-    project_path = e2e_repo_dir / "hello-world-app"
+    project_path = live_e2e_repo_dir / "hello-world-app"
     page_tsx_path = project_path / "src" / "app" / "page.tsx"
     assert project_path.is_dir(), f"Project directory '{project_path}' was not created."
     assert page_tsx_path.is_file(), f"Page component '{page_tsx_path}' was not created."
@@ -99,6 +83,7 @@ async def test_full_e2e_hello_world(agent_graph_fixture, e2e_repo_dir: Path, mon
 
     # Assert 4.4: The generated project can be built successfully
     logger.info(f"Performing final verification by running 'npm run build' in {project_path}...")
+    # We must use the real run_shell tool here as well
     build_result = await run_shell.ainvoke({
         "command": "npm run build",
         "working_directory_relative_to_repo": "hello-world-app",
@@ -107,4 +92,4 @@ async def test_full_e2e_hello_world(agent_graph_fixture, e2e_repo_dir: Path, mon
     assert build_result.ok is True, f"Final verification failed. 'npm run build' did not pass. Stderr: {build_result.stderr}"
     logger.info("✅ Assertion Passed: `npm run build` completed successfully.")
 
-    logger.info("--- Full End-to-End Test Passed Successfully! ---")
+    logger.info("--- LIVE End-to-End Test Passed Successfully! ---")

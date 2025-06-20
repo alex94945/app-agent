@@ -1,24 +1,14 @@
 # tests/integration/test_e2e_smoke.py
 
-import os
-import sys
-from pathlib import Path
-
-# Add project root to Python path
-project_root = Path(__file__).parent.parent.parent.resolve()
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
-import asyncio
 import logging
+import os
+from pathlib import Path
+from unittest.mock import patch, MagicMock
 import uuid
-from unittest.mock import patch
-
 import pytest
-from langchain_core.messages import HumanMessage
 
 from common.config import get_settings
-from agent.agent_graph import agent_graph
+from langchain_core.messages import HumanMessage
 
 # --- Configure Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -26,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.mark.asyncio
-async def test_scaffolding_smoke_test(monkeypatch, tmp_path):
+async def test_scaffolding_smoke_test(agent_graph_fixture, monkeypatch, tmp_path):
     """
     A smoke test to verify the agent's primary scaffolding workflow.
 
@@ -36,12 +26,6 @@ async def test_scaffolding_smoke_test(monkeypatch, tmp_path):
     """
     logger.info("--- Starting E2E Scaffolding Smoke Test ---")
     
-    # Use the real agent graph, no mocking of its internals
-    from agent.agent_graph import agent_graph
-
-    # Use the in-memory MCP server from the integration test conftest
-    from tests.integration.conftest import mcp_server
-
     # Set the REPO_DIR to our temporary directory
     repo_dir = tmp_path / "smoke_test_repo"
     repo_dir.mkdir()
@@ -62,7 +46,7 @@ async def test_scaffolding_smoke_test(monkeypatch, tmp_path):
             thread_id = f"smoke-test-{uuid.uuid4()}"
             logger.info(f"Running agent with prompt: '{prompt}'")
             
-            final_state = await agent_graph.ainvoke(
+            final_state = await agent_graph_fixture.ainvoke(
                 {"messages": [HumanMessage(content=prompt)]},
                 config={"configurable": {"thread_id": thread_id}}
             )
