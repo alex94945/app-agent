@@ -80,4 +80,3 @@ async def apply_patch(file_path_in_repo: str, diff_content: str) -> ApplyPatchOu
             ok=False,
             message=f"Unexpected error: {e}",
         )
-

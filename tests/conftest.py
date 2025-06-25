@@ -95,13 +95,16 @@ async def shell_client() -> AsyncIterator[Client]:
 
 
 @pytest.fixture(scope="session")
-def agent_graph_fixture() -> CompiledGraph:
+
+def agent_graph_fixture():
     """
-    Compile the agent graph once per session for performance.
-    This fixture is available to all tests.
+    Returns a factory that builds and compiles the agent graph with optional custom tools.
+    Usage: agent_graph = agent_graph_fixture(tools=...) in tests.
     """
     from agent.agent_graph import build_graph
-    return build_graph()
+    def factory(tools=None):
+        return build_graph(tools=tools)
+    return factory
 
 
 # --- Pydantic Schema for 'fs.list_dir' tool output entries ---

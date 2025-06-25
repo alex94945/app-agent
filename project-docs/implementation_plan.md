@@ -1,4 +1,5 @@
-## Implementation Plan: Autonomous, Tool-Using AI Agent (Revised v2)
+## Implementation Plan
+: Autonomous, Tool-Using AI Agent (Revised v2)
 
 **Guiding Principles for this Implementation:**
 
@@ -300,3 +301,6 @@
 *   Error Recovery & Re-planning
 *   State Management in Agent (for workspace understanding)
 *   Security Hardening
+
+**Future-proofing Note:**
+> To ensure reliable imports for all contributors and CI, plan to migrate the codebase to a `src/` layout (placing all source code in a `src/` directory) or support editable installs (`pip install -e .`). This will eliminate the need for contributors to set `PYTHONPATH` manually and is considered best practice for modern Python projects.

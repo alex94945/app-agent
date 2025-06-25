@@ -70,11 +70,32 @@ The agent is modular and typically invoked via a script or API. See `agent/agent
 - **project-docs/architecture.md**: Up-to-date system architecture overview.
 - **project-docs/implementation_plan.md**: Step-by-step implementation checklist.
 
-## Development Workflow
+## Development
+
+### Quickstart for Running Tests
+
+To run tests (including integration/e2e tests) reliably, set the `PYTHONPATH` to the project root:
+
+```sh
+PYTHONPATH=. pytest
+```
+
+This ensures Python can find all internal modules (like `common.config`).
+
+For convenience, you can also add this to your shell profile or use a tool like `direnv`.
+
+#### Pytest File Path Import Quirk
+
+When running pytest with markers or individual test selection, **prefer using marker-only or module path syntax** (e.g., `pytest -m e2e_live -s` or `pytest -m e2e_live tests.integration.test_live_e2e -s`) instead of file paths (e.g., `tests/integration/test_live_e2e.py`).
+
+This avoids import errors like `ModuleNotFoundError: No module named 'common.config'`, which can occur due to how pytest handles file vs. package imports. This is a common quirk in Python projects with a package structure.
+
+### Workflow
 
 - Follow the implementation plan in `project-docs/implementation_plan.md`.
 - All new tool tests should use FastMCP in-memory servers (see `conftest.py` for fixtures).
 - Keep `architecture.md` and `design_doc.md` up to date with major changes.
+- **Future-proofing note:** Consider migrating to a `src/` layout or using editable installs (`pip install -e .`) to simplify package discovery and testing.
 
 ## Contributing
 
