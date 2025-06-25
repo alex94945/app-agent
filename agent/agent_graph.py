@@ -244,13 +244,12 @@ def make_verification_id(original_id: str) -> str:
     return f"{original_id}_verify"
 
 
-def build_graph(tools=None):
+from typing import Optional, List, Any
+
+def build_graph():
     """
     Builds the LangGraph for the autonomous agent.
-    Accepts an optional tools argument for test injection.
     """
-    if tools is None:
-        tools = all_tools_list
     workflow = StateGraph(AgentState)
 
     workflow.add_node("planner", planner_llm_step)

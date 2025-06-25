@@ -15,6 +15,7 @@ import pytest_asyncio # Added for async fixtures
 import asyncio
 from typing import AsyncIterator, Optional, List
 from contextlib import asynccontextmanager
+from unittest.mock import patch
 
 from fastmcp import Client, FastMCP
 from pydantic import BaseModel, Field
@@ -103,7 +104,12 @@ def agent_graph_fixture():
     """
     from agent.agent_graph import build_graph
     def factory(tools=None):
-        return build_graph(tools=tools)
+        if tools:
+            with patch('agent.agent_graph.all_tools_list', tools), \
+                 patch('agent.executor.runner.ALL_TOOLS_LIST', tools), \
+                 patch('agent.executor.runner.tool_map', {t.name: t for t in tools}):
+                return build_graph()
+        return build_graph()
     return factory
 
 

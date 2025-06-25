@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.mark.asyncio
-async def test_scaffolding_smoke_test(agent_graph_fixture, monkeypatch, tmp_path):
+async def test_scaffolding_smoke_test(agent_graph_fixture, monkeypatch, tmp_path, mcp_server_fixture):
     """
     A smoke test to verify the agent's primary scaffolding workflow.
 
@@ -45,8 +45,8 @@ async def test_scaffolding_smoke_test(agent_graph_fixture, monkeypatch, tmp_path
             prompt = "Create a new Next.js application called my-app."
             thread_id = f"smoke-test-{uuid.uuid4()}"
             logger.info(f"Running agent with prompt: '{prompt}'")
-            
-            final_state = await agent_graph_fixture.ainvoke(
+            agent_graph = agent_graph_fixture()
+            final_state = await agent_graph.ainvoke(
                 {"messages": [HumanMessage(content=prompt)]},
                 config={"configurable": {"thread_id": thread_id}}
             )

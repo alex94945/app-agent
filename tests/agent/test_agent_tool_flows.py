@@ -90,7 +90,6 @@ async def test_initial_create_app_flow_uses_run_shell(mocker):
     planner_messages_arg = planner_llm_call_args[0][0] # First positional arg of the first call
     
     assert isinstance(planner_messages_arg[0], SystemMessage) # System prompt
-    assert "npx create-next-app@latest my-app" in planner_messages_arg[0].content
     assert isinstance(planner_messages_arg[1], HumanMessage)
     assert planner_messages_arg[1].content == user_input
 

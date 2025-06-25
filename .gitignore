@@ -47,6 +47,7 @@ yarn-error.log*
 
 # Local development
 workspace_dev/
+e2e_output/
 .windsurf/
 digest.txt
 

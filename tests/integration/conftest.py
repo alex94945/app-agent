@@ -167,7 +167,7 @@ def configure_logging():
     logging.debug("Logging configured to DEBUG level for integration tests.")
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 def mcp_server_fixture(request):
     """Starts a mock MCP server for the test session."""
     # Use a different port to avoid conflicts with default
