@@ -35,12 +35,14 @@ tool_map = {tool.name: tool for tool in ALL_TOOLS_LIST}
 
 logger = logging.getLogger(__name__)
 
-class ToolExecutionError(BaseModel): # Added inheritance
+class ToolExecutionError(Exception):
     """Structured error output for when a tool fails during execution."""
-    error_type: str # e.g., 'ToolException', 'McpError', 'GenericException'
-    tool_name: str
-    message: str
-    details: Optional[str] = None
+    def __init__(self, error_type: str, tool_name: str, message: str, details: Optional[str] = None):
+        self.error_type = error_type
+        self.tool_name = tool_name
+        self.message = message
+        self.details = details
+        super().__init__(f"[{error_type}] Error in tool '{tool_name}': {message}")
 
 async def run_single_tool(
     tool_name: str,

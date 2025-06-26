@@ -25,3 +25,6 @@ class AgentState(TypedDict):
 
     # Serialized state for FixCycleTracker
     fix_cycle_tracker_state: Optional[dict] = None
+
+    # The name of the tool chosen by the reason step, to be used by the arg step.
+    next_tool_to_call: Optional[str] = Field(default=None, description="The name of the tool selected by the reasoning planner.")

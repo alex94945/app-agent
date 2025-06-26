@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     EMBED_PROVIDER: str = "openai"
 
     # Model to use for OpenAI LLM calls.
-    OPENAI_MODEL_NAME: str = "gpt-4.1-2025-04-14"
+    OPENAI_MODEL_NAME: str = "gpt-4.1-mini-2025-04-14"
 
     # --- Tool & Service Configuration ---
     # URL for the running Model Context Protocol (MCP) server.

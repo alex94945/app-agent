@@ -1,34 +1,33 @@
 # agent/agent_graph.py
 
 import logging
-import asyncio # Required for gather if running multiple tools concurrently
+import asyncio
 import json
 import re
-import inspect
+from typing import Optional
+from uuid import uuid4
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage, ToolMessage, ToolCall
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage, ToolMessage
+from langchain_core.pydantic_v1 import BaseModel, Field
 
 from agent.prompts.initial_scaffold import INITIAL_SCAFFOLD_PROMPT
 from agent.state import AgentState
-from agent.executor.parser import parse_tool_calls
 from common.llm import get_llm_client
 from agent.executor.runner import run_single_tool, ToolExecutionError
-from agent.executor.fix_cycle import FixCycleTracker
-from agent.executor.output_handlers import is_tool_successful, format_tool_output
+from agent.executor.output_handlers import format_tool_output
 
 # Import all tools
-from tools.file_io_mcp_tools import read_file, write_file, WriteFileOutput
-from tools.shell_mcp_tools import run_shell, RunShellOutput
-from tools.patch_tools import apply_patch, ApplyPatchOutput
+from tools.file_io_mcp_tools import read_file, write_file
+from tools.shell_mcp_tools import run_shell
+from tools.patch_tools import apply_patch
 from tools.vector_store_tools import vector_search
 from tools.lsp_tools import lsp_definition, lsp_hover
 from tools.diagnostics_tools import get_diagnostics, diagnose
 
 logger = logging.getLogger(__name__)
 
-MAX_ITERATIONS = 10  # Maximum number of planning iterations
-MAX_FIX_ATTEMPTS = 3   # Maximum number of fix attempts for a single tool call ID
+MAX_ITERATIONS = 15
 
 # List of all tools for the planner LLM to know about
 all_tools_list = [
@@ -42,489 +41,204 @@ all_tools_list = [
     get_diagnostics,
     diagnose,
 ]
+tool_map = {tool.name: tool for tool in all_tools_list}
 
-# tool_map is no longer needed here, run_single_tool resolves tools internally.
-# all_tools_list is still used by the planner_llm_step.
+# --- Planner Nodes (Two-Step: Reason -> Act) ---
 
-def planner_llm_step(state: AgentState) -> AgentState:
-    # Ensure root-level tool_call_log exists
-    state.setdefault("tool_call_log", [])
-    """
-    The primary LLM-powered node that plans the next step or responds.
-    """
-    fix_tracker_summary = "N/A"
-    if state.get('fix_cycle_tracker_state'):
-        tracker = FixCycleTracker.from_state(state['fix_cycle_tracker_state'])
-        fix_tracker_summary = tracker.get_current_fix_state()
-    logger.info("Executing planner_llm_step... Iteration: %s, FixCycleTracker: %s", state.get('iteration_count', 0), fix_tracker_summary)
+class ToolPicker(BaseModel):
+    """A tool to perform the requested action, or finish if the task is complete."""
+    tool_name: Optional[str] = Field(
+        default=None, 
+        description="The name of the tool to use, or leave blank if the task is complete."
+    )
+    summary: str = Field(
+        description="A brief summary of your reasoning for choosing this tool, or a summary of why the task is complete."
+    )
+    project_subdirectory: Optional[str] = Field(
+        default=None,
+        description="If creating a new project, the URL-friendly slug for the project subdirectory (e.g., 'my-cool-app')."
+    )
 
-    # Initialize the LLM client for this step, binding all available tools.
-    llm = get_llm_client(purpose="planner").bind_tools(all_tools_list)
-
-    messages_for_llm: list[BaseMessage] = []
-
-    # Add a system prompt to guide the LLM's behavior for initial scaffolding
-    # This prompt is specific to the initial task of creating a Next.js app.
-    system_prompt_content = INITIAL_SCAFFOLD_PROMPT
-
-    # Prepend the system prompt to the messages for the LLM
-    messages_for_llm = []
-    current_project_subdirectory = state.get("project_subdirectory")
-    if current_project_subdirectory:
-        system_prompt_content = system_prompt_content.replace("{{project_subdirectory}}", current_project_subdirectory)
+def planner_reason_step(state: AgentState) -> dict:
+    """First planner step: LLM call without tool schemas to decide which tool to use."""
+    messages = state['messages']
+    llm = get_llm_client().with_structured_output(ToolPicker)
     
-    messages_for_llm.append(SystemMessage(content=system_prompt_content))
-    messages_for_llm.extend(state["messages"])  # Add the rest of the messages
+    system_prompt = f"""You are an expert software development agent.
 
-    logger.debug("System prompt (truncated to 300 chars): %s", system_prompt_content[:300])
-    logger.info("Invoking LLM for planning with %s messages...", len(messages_for_llm))
-    response_ai_message = llm.invoke(messages_for_llm)
-    logger.info(f"LLM Response: Content='{response_ai_message.content[:100]}...', ToolCalls={response_ai_message.tool_calls}")
+Your task is to choose the best tool for the job to solve the user's request. The user's request is in the first message.
 
-    # If the AIMessage contains tool_calls, log them
-    if hasattr(response_ai_message, "tool_calls") and response_ai_message.tool_calls:
-        for tc in response_ai_message.tool_calls:
-            # tc may be dict or ToolCall; extract fields safely
-            tc_id = getattr(tc, "id", None) or tc.get("id")
-            tc_name = getattr(tc, "name", None) or tc.get("name")
-            tc_args = getattr(tc, "args", None) or tc.get("args")
-            state["tool_call_log"].append({
-                "id": tc_id,
-                "name": tc_name,
-                "args": tc_args,
-                "source": "planner_llm_step"
-            })
+If this is the first step in creating a new project, you MUST decide on a descriptive, URL-friendly slug for the project (e.g., "my-cool-app") and set the `project_subdirectory` field.
 
-    current_iteration_count = state.get('iteration_count', 0) + 1
-    logger.debug("LLM tool_calls raw: %s", response_ai_message.tool_calls)
-    logger.info("Planner step completed. Iteration count: %s", current_iteration_count)
+Review the conversation history and the output of previous tools. 
 
-    return {"messages": state["messages"] + [response_ai_message], "iteration_count": current_iteration_count, "tool_call_log": state["tool_call_log"]}
+If the user's request is not yet complete, choose the next tool to use. The available tools are: {[tool.name for tool in all_tools_list]}.
+
+If the user's request has been fully satisfied, DO NOT select a tool. Instead, provide a summary of the work completed.
+
+Please respond with your decision."""
+
+    prompt_messages = [SystemMessage(content=system_prompt)] + messages
+
+    logger.info(f"Invoking reason step with messages: {prompt_messages}")
+    response = llm.invoke(prompt_messages)
+    logger.info(f"Reason step response: {response}")
+
+    update_dict = {}
+
+    # If the LLM decides the task is done, it will return a None tool_name.
+    if not response.tool_name:
+        logger.info("Planner decided task is complete.")
+        update_dict["next_tool_to_call"] = None
+        update_dict["messages"] = [AIMessage(content=f"Final summary: {response.summary}")]
+    else:
+        update_dict["next_tool_to_call"] = response.tool_name
+        update_dict["messages"] = [AIMessage(content=f"Reasoning: {response.summary}")]
+    
+    # If the LLM sets the project subdirectory, add it to the state update.
+    # Only do this if the state doesn't already have one.
+    if response.project_subdirectory and not state.get("project_subdirectory"):
+        logger.info(f"Planner set project_subdirectory to: {response.project_subdirectory}")
+        update_dict["project_subdirectory"] = response.project_subdirectory
+
+    return update_dict
+
+def planner_arg_step(state: AgentState) -> dict:
+    """This step generates the arguments for the tool chosen in the reason step."""
+    tool_name = state.get("next_tool_to_call")
+    if not tool_name:
+        # The planner has decided the task is complete.
+        # We pass through the AIMessage from the previous step.
+        logger.info("Arg step is skipping: task is complete.")
+        return {}
+
+    # Get the specific tool schema
+    try:
+        tool = tool_map[tool_name]
+    except KeyError:
+        # This could happen if the LLM hallucinates a tool name.
+        # We'll add the error as a tool message and let the agent recover.
+        error_message = f"Tool '{tool_name}' not found. Please choose from the available tools."
+        # This message doesn't have a tool_call_id, which might be an issue.
+        # For now, we'll add it and see how LangGraph handles it.
+        # TODO: Create a robust error handling mechanism for bad tool names.
+        return {"messages": [ToolMessage(content=error_message, tool_call_id="invalid_tool_name")]}
+
+    # Get the LLM with the specific tool schema
+    llm_with_tool = get_llm_client().with_structured_output(tool.args_schema)
+
+    system_prompt = f"""You are an expert software development agent.
+
+Your task is to generate the arguments for the tool: '{tool_name}'.
+
+Review the conversation history and the user's request to determine the correct arguments.
+
+Only respond with the arguments, nothing else."""
+
+    prompt_messages = [SystemMessage(content=system_prompt)] + state['messages']
+
+    logger.info(f"Invoking arg step for tool {tool_name} with messages: {prompt_messages}")
+    response_args = llm_with_tool.invoke(prompt_messages)
+    logger.info(f"Arg step response: {response_args}")
+
+    # The response_args is a Pydantic model. We need to convert it to a dict.
+    args_dict = response_args.dict()
+
+    # LangChain expects tool calls to be in a specific format.
+    tool_call = {
+        "name": tool_name,
+        "args": args_dict,
+        "id": str(uuid4()),
+    }
+
+    return {"messages": [AIMessage(content="", tool_calls=[tool_call])]}
+
+# --- Executor Node ---
 
 async def tool_executor_step(state: AgentState) -> dict:
-    # Ensure root-level tool_call_log exists
-    state.setdefault("tool_call_log", [])
-    logger.info("Entering tool_executor_step with FixCycleTracker integration.")
-    """
-    Executes tools based on the LLM's tool_calls, using FixCycleTracker and new output handlers.
-    """
-    messages = state['messages']
-    last_message = messages[-1]
-
+    """Executes the tool call generated by the planner."""
+    last_message = state['messages'][-1]
     if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
-        logger.warning("No tool calls found in the last AIMessage. Returning empty tool messages.")
-        return {"messages": [], "fix_cycle_tracker_state": state.get('fix_cycle_tracker_state')} # Pass through tracker state
+        return {}
 
-    parsed_tool_calls = parse_tool_calls(last_message)
-    if not parsed_tool_calls:
-        logger.warning("No valid ToolCall objects to execute after parsing. Returning empty tool messages.")
-        return {"messages": [], "fix_cycle_tracker_state": state.get('fix_cycle_tracker_state')} # Pass through tracker state
-
-    tool_messages: list[ToolMessage] = []
-    logger.debug("Parsed %s tool calls to execute.", len(parsed_tool_calls))
+    tool_call = last_message.tool_calls[0]
     
-    # Retrieve FixCycleTracker from state, or initialize if not present
-    tracker_state = state.get("fix_cycle_tracker_state")  # Load using the consistent key
-    if tracker_state:
-        tracker = FixCycleTracker.from_state(tracker_state)
-        logger.info(f"FixCycleTracker loaded from state. Current state: {tracker.to_state()}")
-    else:
-        tracker = FixCycleTracker()
-        logger.info(f"FixCycleTracker initialized fresh. Current state: {tracker.to_state()}")
+    try:
+        output = await run_single_tool(tool_call['name'], tool_call['args'], state)
+        output_content = format_tool_output(output)
+        tool_message = ToolMessage(content=output_content, tool_call_id=tool_call['id'])
+    except ToolExecutionError as e:
+        logger.error(f"Tool execution failed: {e}")
+        tool_message = ToolMessage(content=f"Error: {e}", tool_call_id=tool_call['id'])
 
-    additional_state_updates: dict = {}
+    return {"messages": [tool_message]}
 
-    logger.debug(f"Inspecting parsed_tool_calls before loop: {parsed_tool_calls}, type: {type(parsed_tool_calls)}")
-    for tool_call in parsed_tool_calls:
-        logger.debug(f"Inspecting individual tool_call in loop: {tool_call}, type: {type(tool_call)}")
-        
-        # ToolCall is a TypedDict, so tool_call is already a dictionary.
-        # Access its elements using dictionary key access.
-        try:
-            tool_name = tool_call['name']
-            tool_args = tool_call['args']
-            tool_call_id = tool_call['id'] # Assumes 'id' is present for valid tool calls from AIMessage
-        except KeyError as e:
-            logger.error(f"Tool call dictionary {tool_call} missing expected key: {e}. Skipping.")
-            continue
-        except TypeError: # Handles case where tool_call might not be subscriptable (e.g. None)
-            logger.error(f"Tool call {tool_call} is not a dictionary as expected. Skipping.")
-            continue
+# --- Control Flow and Graph Definition ---
 
-        logger.info(f"Attempting to execute tool: '{tool_name}' with args: {tool_args} (Call ID: {tool_call_id})")
+def after_reasoner_router(state: AgentState) -> str:
+    """Routes after the reasoning step. If a tool is chosen, generate args. Otherwise, end."""
+    if state.get("next_tool_to_call"):
+        return "planner_arg_generator"
+    logger.info("Reasoner did not choose a tool. Ending.")
+    return END
 
-        # Core tool execution using run_single_tool
-        raw_tool_output = await run_single_tool(tool_name, tool_args, state)
-
-        # Determine success and format output using output_handlers
-        # ToolExecutionError is one of the possible raw_tool_output types from run_single_tool
-        succeeded = is_tool_successful(raw_tool_output)
-        formatted_output_content = format_tool_output(raw_tool_output)
-        
-        # Append to tool_call_log after execution (with status/result)
-        state["tool_call_log"].append({
-            "id": tool_call_id,
-            "name": tool_name,
-            "args": tool_args,
-            "status": "ok" if succeeded else "error",
-            "result": formatted_output_content,
-            "source": "tool_executor_step"
-        })
-
-        tool_messages.append(ToolMessage(content=formatted_output_content, tool_call_id=tool_call_id))
-        logger.debug(f"Tool '{tool_name}' (ID: {tool_call_id}) executed. Succeeded: {succeeded}. Formatted Output: {formatted_output_content[:200]}...")
-
-        # Update FixCycleTracker
-        # Get the state *before* record_tool_run for the conditional logging
-        # This state reflects whether a fix cycle was active *before* this tool_run was recorded.
-        pre_record_fix_state = tracker.get_current_fix_state()
-
-        if pre_record_fix_state.get("is_active") and pre_record_fix_state.get("failing_tool_name") and tool_name != pre_record_fix_state.get("failing_tool_name"):
-            logger.debug(f"DEBUG_FCT: Recording a fix attempt. Current tool: '{tool_name}', Failing tool: '{pre_record_fix_state.get('failing_tool_name')}'.")
-            logger.debug(f"DEBUG_FCT: Tracker state BEFORE record_tool_run for fix tool '{tool_name}' (ID: {tool_call_id}): {tracker.to_state()}")
-
-        tracker.record_tool_run(
-            tool_name=tool_name,
-            tool_args=tool_args,
-            tool_call_id=tool_call_id,
-            succeeded=succeeded,
-            output_content=formatted_output_content
-        )
-
-        # Use the same pre_record_fix_state for the condition, as it reflects the state *before* this tool's effects were recorded.
-        if pre_record_fix_state.get("is_active") and pre_record_fix_state.get("failing_tool_name") and tool_name != pre_record_fix_state.get("failing_tool_name"):
-            logger.debug(f"DEBUG_FCT: Tracker state AFTER record_tool_run for fix tool '{tool_name}' (ID: {tool_call_id}): {tracker.to_state()}")
-            # Record a fix attempt now that a tool different from the failing one has executed
-            tracker.record_fix_attempt(fix_applied_successfully=succeeded)
-
-        # Special handling for 'create-next-app' success to update project_subdirectory
-        if tool_name == run_shell.name and succeeded and isinstance(raw_tool_output, RunShellOutput):
-            command_str = tool_args.get("command", "")
-            if "create-next-app" in command_str:
-                match = re.search(r"create-next-app(?:@latest)?\s+([^\s]+)", command_str)
-                if match:
-                    app_name = match.group(1).split(' ')[0]
-                    if app_name and not app_name.startswith("--"):
-                        logger.info(f"Detected successful 'create-next-app' for '{app_name}'. Updating project_subdirectory.")
-                        additional_state_updates["project_subdirectory"] = app_name
-                    else:
-                        logger.warning(f"Could not reliably extract app name from '{command_str}' or extracted name is an option: '{app_name}'")
-                else:
-                    logger.warning(f"'create-next-app' detected, but could not extract app name from: {command_str}")
-
-    # After processing all tool calls, the tracker instance holds the latest state.
-    # This state will be returned via additional_state_updates.
-    current_tracker_state_dict = tracker.to_state()
-    logger.debug(f"Tracker's current state after all tool executions in this step: {current_tracker_state_dict}")
-
-    # Determine if verification is needed based on the tracker's state AFTER all tools ran
-    is_verification_needed = tracker.needs_verification()  # Call the method
-    if is_verification_needed:
-        failing_run_details = tracker._state.get("failing_tool_run")
-        tool_name_for_log = failing_run_details['name'] if failing_run_details else 'N/A'
-        tool_id_for_log = failing_run_details['id'] if failing_run_details else 'N/A'
-        logger.info(f"Tool execution complete. Verification needed for tool '{tool_name_for_log}' (ID: {tool_id_for_log}). FixCycleTracker state: {tracker.to_state()}")
-    else:
-        logger.info(f"Tool execution complete. No verification currently needed. FixCycleTracker state: {tracker.to_state()}")
-
-    additional_state_updates['needs_verification'] = is_verification_needed  # Use the correct variable
-    additional_state_updates['fix_cycle_tracker_state'] = current_tracker_state_dict
-    
-    # Remove deprecated fields from direct state update if they exist
-    # These are now managed by FixCycleTracker
-    additional_state_updates.pop('failing_tool_run', None)
-    additional_state_updates.pop('fix_attempts', None)
-
-    logger.info(f"Exiting tool_executor_step. FixCycleTracker state: {additional_state_updates['fix_cycle_tracker_state']}, Needs Verification: {additional_state_updates.get('needs_verification')}")
-    return {"messages": tool_messages, **additional_state_updates, "tool_call_log": state["tool_call_log"]}
-
-
-def make_verification_id(original_id: str) -> str:
-    """Generate a verification tool_call_id from the original tool_call_id."""
-    return f"{original_id}_verify"
-
-
-from typing import Optional, List, Any
+def after_executor_router(state: AgentState) -> str:
+    """After executing a tool, decide whether to continue or end."""
+    if state.get('iteration_count', 0) >= MAX_ITERATIONS:
+        logger.warning("Max iterations reached. Ending.")
+        return END
+    return "planner_reasoner"
 
 def build_graph():
-    """
-    Builds the LangGraph for the autonomous agent.
-    """
+    """Builds the LangGraph for the autonomous agent."""
     workflow = StateGraph(AgentState)
 
-    workflow.add_node("planner", planner_llm_step)
+    # Add nodes
+    workflow.add_node("planner_reasoner", planner_reason_step)
+    workflow.add_node("planner_arg_generator", planner_arg_step)
     workflow.add_node("tool_executor", tool_executor_step)
 
-    async def verify_node(state: AgentState) -> dict:
-        # Ensure root-level tool_call_log exists
-        state.setdefault("tool_call_log", [])
-        """
-        Verifies a fix by re-running the original failing tool call using FixCycleTracker.
-        This node is entered only if `needs_verification` is True (set by FixCycleTracker).
-        """
-        logger.info("Entering verify_node.")
-        
-        fix_tracker = FixCycleTracker.from_state(state.get('fix_cycle_tracker_state') or {})
-        tool_to_verify = fix_tracker.get_tool_to_verify()
-
-        if not tool_to_verify:
-            logger.error("Verify_node entered, but FixCycleTracker has no tool to verify. This might indicate a logic error or premature entry. Skipping verification.")
-            # Ensure needs_verification is false if we can't proceed.
-            fix_tracker.record_verification_result(succeeded=False) # Mark as failed to clear verification flag
-            return {
-                "messages": [ToolMessage(content="<error type='internal'>Verify node error: no tool details from FixCycleTracker.</error>", tool_call_id="verify_node_tracker_error")],
-                "fix_cycle_tracker_state": fix_tracker.to_state()
-            }
-
-        tool_name_to_verify = tool_to_verify['name']
-        tool_args_to_verify = tool_to_verify['args']
-        original_tool_call_id = tool_to_verify.get('id', f"verify_{tool_name_to_verify}")
-
-        logger.info(f"Attempting to verify by re-running tool: '{tool_name_to_verify}' with args: {tool_args_to_verify} (Original ID: {original_tool_call_id})")
-
-        # Use run_single_tool for consistent execution and error handling
-        raw_tool_output = await run_single_tool(tool_name_to_verify, tool_args_to_verify, state)
-        
-        succeeded = is_tool_successful(raw_tool_output)
-        # Use centralized helper for verification tool_call_id
-        verification_tool_call_id = make_verification_id(original_tool_call_id)
-        logger.info(f"[verify_node] Original tool_call_id: {original_tool_call_id} | Verification tool_call_id: {verification_tool_call_id}")
-        output_content = format_tool_output(raw_tool_output)
-
-        fix_tracker.record_verification_result(succeeded=succeeded)
-        
-        if succeeded:
-            logger.info(f"Verification successful for tool '{tool_name_to_verify}'. Fix cycle resolved.")
-        else:
-            logger.warning(f"Verification failed for tool '{tool_name_to_verify}'. Fix cycle remains or may escalate to max attempts.")
-
-        # Log the verification tool call
-        log_entry = {
-            "id": verification_tool_call_id,
-            "name": tool_name_to_verify,
-            "args": tool_args_to_verify,
-            "status": "ok" if succeeded else "error",
-            "result": output_content,
-            "source": "verify_node"
-        }
-        state["tool_call_log"].append(log_entry)
-
-        # Use a SystemMessage to inform the LLM of the verification result, as this is not a direct tool response.
-        system_message_content = f"<verification_result tool_name='{tool_name_to_verify}' success='{succeeded}'>\n{output_content}\n</verification_result>"
-        system_message = SystemMessage(content=system_message_content)
-        updated_fix_cycle_state = fix_tracker.to_state()
-        logger.info(f"Exiting verify_node. FixCycleTracker state: {updated_fix_cycle_state}")
-        
-        # The needs_verification flag is now internal to FixCycleTracker's state and its effect on routing.
-        # We return the full tracker state.
-        return {"messages": [system_message], "fix_cycle_tracker_state": updated_fix_cycle_state, "tool_call_log": state["tool_call_log"]}
-
-    workflow.add_node("verify_step", verify_node)
-
-    def max_iterations_handler_node(state: AgentState) -> dict:
-        # Always pass through tool_call_log unchanged
-        state.setdefault("tool_call_log", [])
-        logger.warning(f"Max iterations ({MAX_ITERATIONS}) reached. Ending graph.")
-        max_iter_message = AIMessage(content=f"Maximum planning iterations ({MAX_ITERATIONS}) reached. Aborting execution.")
-        return {"messages": [max_iter_message], "iteration_count": state.get('iteration_count', MAX_ITERATIONS), "tool_call_log": state["tool_call_log"]}
-
-    workflow.add_node("max_iterations_handler", max_iterations_handler_node)
-
-    def max_fix_attempts_handler_node(state: AgentState) -> dict:
-        # Always pass through tool_call_log unchanged
-        state.setdefault("tool_call_log", [])
-        fix_tracker = FixCycleTracker.from_state(state.get('fix_cycle_tracker_state') or {})
-        current_fix_details = fix_tracker.get_current_fix_state()
-        
-        failing_tool_info_str = "unknown tool"
-        if current_fix_details.get('is_active') and current_fix_details.get('failing_tool_run'):
-            failing_run = current_fix_details['failing_tool_run']
-            failing_tool_info_str = f"tool '{failing_run['name']}' (ID: {failing_run['id']}) with args {failing_run['args']}"
-        
-        attempts = current_fix_details.get('current_attempt_count', MAX_FIX_ATTEMPTS)
-        logger.warning(f"Max fix attempts ({attempts}) reached for {failing_tool_info_str}. Ending graph.")
-        
-        max_fix_message = AIMessage(
-            content=f"Maximum fix attempts ({attempts}) reached for {failing_tool_info_str}. Aborting further attempts on this issue."
-        )
-        
-        # The tracker itself should manage its state when max attempts are hit (e.g., by no longer being 'active' or 'needs_verification').
-        # We just pass its state through.
-        # If the design requires explicitly resetting it here, that logic would go into FixCycleTracker.
-        # For now, assume the planner routes away and the cycle effectively ends.
-        return {
-            "messages": [max_fix_message],
-            "fix_cycle_tracker_state": fix_tracker.to_state(), # Pass through the tracker state
-            "tool_call_log": state["tool_call_log"]
-        }
-    workflow.add_node("max_fix_attempts_handler", max_fix_attempts_handler_node)
-
-    workflow.set_entry_point("planner")
-
-    def should_route_after_planner(state: AgentState) -> str:
-        iteration_count = state.get('iteration_count', 0)
-        fix_tracker = FixCycleTracker.from_state(state.get('fix_cycle_tracker_state') or {})
-        logger.info(f"Routing decision: Iteration count = {iteration_count}, FixCycleTracker state = {fix_tracker.get_current_fix_state()}")
-
-        if iteration_count > MAX_ITERATIONS:
-            logger.info("Max iterations reached. Routing to max_iterations_handler.")
-            return "force_end_due_to_iterations"
-        
-        if fix_tracker.has_reached_max_fix_attempts(MAX_FIX_ATTEMPTS):
-            failing_tool_info = fix_tracker.get_current_fix_state().get('failing_tool_run', 'unknown tool')
-            logger.info(f"Max fix attempts reached for tool {failing_tool_info} according to FixCycleTracker. Routing to max_fix_attempts_handler.")
-            return "force_end_due_to_fix_attempts"
-        
-        last_message = state['messages'][-1]
-        if isinstance(last_message, AIMessage) and last_message.tool_calls:
-            logger.info("Tool calls present. Routing to tool_executor.")
-            return "tool_executor"
-        
-        logger.info("No tool calls from LLM and not max iterations/fix_attempts. Ending graph.")
-        return "continue_to_end"
-
+    # Define edges
+    workflow.set_entry_point("planner_reasoner")
     workflow.add_conditional_edges(
-        "planner",
-        should_route_after_planner,
+        "planner_reasoner",
+        after_reasoner_router,
         {
-            "tool_executor": "tool_executor",
-            "force_end_due_to_iterations": "max_iterations_handler",
-            "force_end_due_to_fix_attempts": "max_fix_attempts_handler",
-            "continue_to_end": END
+            "planner_arg_generator": "planner_arg_generator",
+            END: END
         }
     )
-    
-    workflow.add_edge("max_iterations_handler", END)
-    workflow.add_edge("max_fix_attempts_handler", END)
-
-    # Ensure the final output is a single dict (latest state) rather than a list of states
-    def _end_aggregator(states):
-        # LangGraph passes a list of states reaching END; return the last one.
-        return states[-1] if isinstance(states, list) else states
-
-
-    def should_route_after_tool_executor(state: AgentState) -> str:
-        fix_tracker = FixCycleTracker.from_state(state.get('fix_cycle_tracker_state') or {})
-        if fix_tracker.needs_verification():
-            logger.info("Routing after tool_executor: Needs verification (per FixCycleTracker). Routing to verify_step.")
-            return "verify_step"
-        logger.info("Routing after tool_executor: No verification needed. Routing to planner.")
-        return "planner"
-
+    workflow.add_edge("planner_arg_generator", "tool_executor")
     workflow.add_conditional_edges(
         "tool_executor",
-        should_route_after_tool_executor,
+        after_executor_router,
         {
-            "verify_step": "verify_step",
-            "planner": "planner"
-        }
-    )
-
-    def should_route_after_verify_node(state: AgentState) -> str:
-        fix_tracker = FixCycleTracker.from_state(state.get('fix_cycle_tracker_state') or {})
-        current_fix_state = fix_tracker.get_current_fix_state()
-
-        if not current_fix_state['is_active'] and not current_fix_state['needs_verification']:
-            # This implies verification was successful and the cycle is resolved.
-            logger.info("Routing after verify_step: Verification successful (fix cycle inactive, no verification needed). Routing to planner.")
-            return "planner"
-        
-        # If still needs verification (shouldn't happen if verify_node clears it) or is active and max attempts reached.
-        if fix_tracker.has_reached_max_fix_attempts(MAX_FIX_ATTEMPTS):
-            logger.info(f"Routing after verify_step: Verification failed or cycle ongoing, and max fix attempts reached. Routing to max_fix_attempts_handler.")
-            return "max_fix_attempts_handler"
-        
-        # Verification failed, but more attempts are allowed, or cycle is still active for other reasons.
-        logger.info(f"Routing after verify_step: Verification failed or cycle ongoing, but more attempts allowed. Routing to planner for another fix attempt.")
-        return "planner" 
-
-    workflow.add_conditional_edges(
-        "verify_step",
-        should_route_after_verify_node,
-        {
-            "planner": "planner",
-            "max_fix_attempts_handler": "max_fix_attempts_handler"
+            "planner_reasoner": "planner_reasoner",
+            END: END
         }
     )
 
     memory = MemorySaver()
-    app = workflow.compile(checkpointer=memory)
-    logger.info("LangGraph compiled successfully with tool routing.")
-    return app
+    return workflow.compile(checkpointer=memory)
+
+# --- Main Entry Points ---
 
 agent_graph = build_graph()
 
-async def run_agent(user_input: str, thread_id: str):
-    """
-    Runs the agent with a given user input and returns the final response or streams events.
-    This example focuses on getting the final message but can be adapted for full streaming.
-    """
-    logger.info(f"Running agent for thread_id: {thread_id} with input: '{user_input}'")
-    
-    config = {"configurable": {"thread_id": thread_id}}
-    initial_message = HumanMessage(content=user_input)
-    
-    final_message_to_return = None
+async def run_agent(question: str, project_subdirectory: str):
+    """Run the agent with a given question and project subdirectory."""
+    config = {"configurable": {"thread_id": "test-thread"}}
+    initial_state = AgentState(
+        messages=[HumanMessage(content=INITIAL_SCAFFOLD_PROMPT.format(question=question))],
+        iteration_count=0,
+        project_subdirectory=project_subdirectory,
+        next_tool_to_call=None,
+    )
 
-    async for event in agent_graph.astream_events(
-        {"messages": [initial_message], "input": user_input, "iteration_count": 0},
-        config=config,
-        version="v1"
-    ):
-        kind = event["event"]
-        event_name = event.get("name", "N/A") # Some events might not have a 'name'
-        logger.debug(f"EVENT SEEN: kind='{kind}', name='{event_name}'") # DEBUG ALL EVENTS
-        # logger.debug(f"Event: {kind}, Data: {event['data']}") # Verbose event logging
+    async for event in agent_graph.astream(initial_state, config=config):
+        for key, value in event.items():
+            logger.info(f"Event: {key} | Value: {value}")
+        logger.info("----")
 
-        if kind == "on_chat_model_stream":
-            content = event["data"]["chunk"].content
-            if content:
-                # print(content, end="") # For live token streaming to console
-                pass
-        elif kind == "on_tool_start":
-            logger.info(f"Tool started: {event['name']} with input {event['data'].get('input')}")
-        elif kind == "on_tool_end":
-            logger.info(f"Tool ended: {event['name']} with output (truncated): {str(event['data'].get('output'))[:200]}...")
-        elif kind == "on_chain_end" and event["name"] == "LangGraph": # Graph finished execution for this input
-            raw_final_output = event['data']['output']
-            logger.info(f"__root__ on_chain_end: raw_final_output type: {type(raw_final_output)}, value: {raw_final_output}")
-
-            final_messages_list = []
-            output_states = []
-            if isinstance(raw_final_output, list):
-                output_states = raw_final_output
-            elif isinstance(raw_final_output, dict):
-                output_states = [raw_final_output]
-
-            # Prioritize the handler's message if it exists, as it's a definitive terminal state.
-            handler_state = next((s for s in output_states if 'max_iterations_handler' in s), None)
-            if handler_state:
-                final_messages_list = handler_state.get('max_iterations_handler', {}).get('messages', [])
-            else:
-                # Otherwise, find the planner's message from the last known state.
-                # In a list, the last item is the most recent state.
-                last_state = output_states[-1] if output_states else {}
-                if 'planner' in last_state:
-                    final_messages_list = last_state.get('planner', {}).get('messages', [])
-                # Fallback for direct message state from a single-node output.
-                elif 'messages' in last_state:
-                    final_messages_list = last_state.get('messages', [])
-
-            if final_messages_list:
-                final_message_to_return = final_messages_list[-1]
-                logger.info(f"Agent run completed for thread_id: {thread_id}. Final message: {final_message_to_return}")
-            else:
-                logger.warning(f"Agent run completed for thread_id: {thread_id}, but could not determine final messages from raw_final_output: {raw_final_output}")
-            
-            break # Exit loop once graph is done for this input
-        elif kind == "on_chain_error":
-            logger.error(f"Error in agent execution for thread_id: {thread_id}. Event: {event}")
-            # Potentially set an error message to return
-            final_message_to_return = AIMessage(content=f"An error occurred: {event['data'].get('error')}")
-            break
-
-    if final_message_to_return is None:
-        logger.error(f"Agent stream ended without a final message for thread_id: {thread_id}")
-        return AIMessage(content="Agent finished processing, but no final message was generated.")
-        
-    return final_message_to_return
+    final_state = await agent_graph.aget_state(config)
+    return final_state['messages'][-1].content
