@@ -23,6 +23,17 @@ def pytest_addoption(parser):
         default=False,
         help="Save the generated E2E app to ./workspace_dev instead of a temp directory.",
     )
+    # Add --prompts option only if not already added by a sub-package conftest
+    try:
+        parser.addoption(
+            "--prompts",
+            action="append",
+            default=[],
+            help="Comma-separated list of prompts (or @path/to/file.txt) to feed the live E2E test",
+        )
+    except ValueError:
+        # Option already registered (e.g., by tests/live_e2e/conftest.py). Ignore.
+        pass
 
 project_root = Path(__file__).parent.parent.resolve()
 if str(project_root) not in sys.path:

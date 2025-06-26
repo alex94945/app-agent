@@ -86,12 +86,9 @@ async def actual_fs_list_dir(path: str) -> List[_DirEntry]:
 
 # --- Pytest Parametrization --- 
 
-def pytest_addoption(parser):
-    """Adds the --prompts command-line option to pytest."""
-    parser.addoption(
-        "--prompts", action="append", default=[],
-        help="Comma-separated list of prompts (or @path/to/file.txt) to feed the live E2E test",
-    )
+# The --prompts option is now registered in tests/conftest.py, so we don't
+# need to register it again here.
+
 
 def _load_prompts(raw: str) -> list[str]:
     """Loads prompts from a string, handling file paths prefixed with @."""

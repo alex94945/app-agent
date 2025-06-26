@@ -93,10 +93,14 @@ async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_serv
         last_message = final_state.get("messages", [])[-1]
         assert "error" not in last_message.content.lower(), f"Agent run ended with an error: {last_message.content}"
         final_text = last_message.content.lower()
-        if not ("hello" in final_text and "world" in final_text):
-            logger.error("--- LIVE E2E Test: Dumping full final_state for debugging ---\n%s", json.dumps(final_state, indent=2, default=str))
-            logger.error("--- LIVE E2E Test: Last message content: '%s' ---", last_message.content)
-        assert "hello" in final_text and "world" in final_text, "Agent's final message did not confirm the change."
+        DEFAULT_PROMPT = "Create a hello world app"
+        if prompt.strip().lower() == DEFAULT_PROMPT.lower():
+            if not ("hello" in final_text and "world" in final_text):
+                logger.error("--- LIVE E2E Test: Dumping full final_state for debugging ---\n%s", json.dumps(final_state, indent=2, default=str))
+                logger.error("--- LIVE E2E Test: Last message content: '%s' ---", last_message.content)
+            assert "hello" in final_text and "world" in final_text, "Agent's final message did not confirm the change."
+        else:
+            logger.info("Skipping content assertion for custom prompt.")
     finally:
         # Always log the generated app output directory
         if app_slug:
@@ -119,10 +123,15 @@ async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_serv
         logger.info("✅ Assertion Passed: Project directory and page.tsx exist.")
 
         page_content = page_tsx_path.read_text()
-        # Use a case-insensitive regex to make the assertion more flexible.
-        assert re.search(r"hello[,!\s]*world", page_content, re.IGNORECASE), \
-            f"The text 'Hello, World!' was not found in page.tsx. Content: {page_content}"
-        logger.info("✅ Assertion Passed: page.tsx content is correct.")
+        if prompt.strip().lower() == DEFAULT_PROMPT.lower():
+            # Use a case-insensitive regex to make the assertion more flexible.
+            assert re.search(r"hello[,!\s]*world", page_content, re.IGNORECASE), \
+                f"The text 'Hello, World!' was not found in page.tsx. Content: {page_content}"
+            logger.info("✅ Assertion Passed: page.tsx content is correct.")
+        else:
+            # For custom prompts, just check that page.tsx is non-empty.
+            assert page_content.strip(), f"page.tsx exists but is empty for custom prompt. Content: {page_content}"
+            logger.info("⚠️  Skipping strict content assertion for custom prompt. Only checked that page.tsx exists and is non-empty.")
 
         package_json_path = project_path / "package.json"
         assert package_json_path.is_file(), "package.json was not created."
