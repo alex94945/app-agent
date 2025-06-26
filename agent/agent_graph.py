@@ -7,6 +7,8 @@ import re
 from typing import Optional
 from uuid import uuid4
 from langgraph.graph import StateGraph, END
+from langgraph.pregel import Pregel
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langchain_core.pydantic_v1 import BaseModel, Field
@@ -101,6 +103,8 @@ Please respond with your decision."""
         logger.info(f"Planner set project_subdirectory to: {response.project_subdirectory}")
         update_dict["project_subdirectory"] = response.project_subdirectory
 
+    # increment iteration count so MAX_ITERATIONS can trigger even when no tool executes
+    update_dict["iteration_count"] = state.get("iteration_count", 0) + 1
     return update_dict
 
 def planner_arg_step(state: AgentState) -> dict:
@@ -171,7 +175,10 @@ async def tool_executor_step(state: AgentState) -> dict:
         logger.error(f"Tool execution failed: {e}")
         tool_message = ToolMessage(content=f"Error: {e}", tool_call_id=tool_call['id'])
 
-    return {"messages": [tool_message]}
+    return {
+        "messages": [tool_message],
+        "iteration_count": state.get("iteration_count", 0) + 1,
+    }
 
 # --- Control Flow and Graph Definition ---
 
@@ -189,8 +196,8 @@ def after_executor_router(state: AgentState) -> str:
         return END
     return "planner_reasoner"
 
-def build_graph():
-    """Builds the LangGraph for the autonomous agent."""
+def build_state_graph() -> StateGraph:
+    """Builds the LangGraph StateGraph for the autonomous agent, without compiling it."""
     workflow = StateGraph(AgentState)
 
     # Add nodes
@@ -217,13 +224,34 @@ def build_graph():
             END: END
         }
     )
+    return workflow
 
-    memory = MemorySaver()
-    return workflow.compile(checkpointer=memory)
+def compile_agent_graph(
+    *,
+    checkpointer: bool | BaseCheckpointSaver | None = True,
+    interrupt_before: Optional[list[str]] = None,
+) -> Pregel:
+    """Return a compiled graph; when checkpointer is False or None, no persistence."""
+    graph = build_state_graph()
+    
+    cp = None
+    if checkpointer is True:  # production default
+        cp = MemorySaver()
+    elif checkpointer:
+        cp = checkpointer  # caller supplied a saver instance
+
+    # Default interruption behavior for production
+    if interrupt_before is None:
+        interrupt_before = ["tool_executor"]
+
+    return graph.compile(
+        checkpointer=cp,
+        interrupt_before=interrupt_before,
+    )
 
 # --- Main Entry Points ---
 
-agent_graph = build_graph()
+agent_graph = compile_agent_graph()
 
 async def run_agent(question: str, project_subdirectory: str):
     """Run the agent with a given question and project subdirectory."""
@@ -235,10 +263,22 @@ async def run_agent(question: str, project_subdirectory: str):
         next_tool_to_call=None,
     )
 
-    async for event in agent_graph.astream(initial_state, config=config):
-        for key, value in event.items():
-            logger.info(f"Event: {key} | Value: {value}")
-        logger.info("----")
+    # The astream call was for logging, but invoke is what we need for the final state.
+    # To avoid running twice, I'll use invoke directly.
+    # The original astream loop can be uncommented if verbose logging is needed during debugging.
+    # async for event in agent_graph.astream(initial_state, config=config):
+    #     for key, value in event.items():
+    #         logger.info(f"Event: {key} | Value: {value}")
+    #     logger.info("----")
 
-    final_state = await agent_graph.aget_state(config)
-    return final_state['messages'][-1].content
+    final_state = await agent_graph.ainvoke(
+        initial_state,
+        config=config,
+    )
+
+    # In LangGraph >= 0.4, invoke can return a tuple of states if multiple branches hit END.
+    # We take the last one, which corresponds to the state from the max_iterations_handler.
+    if isinstance(final_state, tuple):
+        final_state = final_state[-1]
+
+    return final_state["messages"][-1]

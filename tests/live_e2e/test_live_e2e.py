@@ -41,7 +41,7 @@ def live_e2e_repo_dir(tmp_path: Path) -> Path:
 @pytest.mark.e2e_live
 @pytest.mark.timeout(900)  # 15-minute timeout
 @pytest.mark.asyncio
-async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_server_fixture):
+async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_server_fixture, request):
     """
     Tests the full, unmocked agent pipeline on a simple scaffolding and
     editing task. This test uses REAL implementations of all tools.
@@ -49,6 +49,11 @@ async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_serv
     --prompts CLI argument.
     """
     logger.info(f"--- Starting LIVE End-to-End Test for prompt: '{prompt}' ---")
+
+    save_app = request.config.getoption("--save-app")
+    if save_app:
+        from pathlib import Path
+        live_e2e_repo_dir = Path.cwd()
 
     # Ensure all shell.run cwd paths resolve under this repo directory
     workspace_path = live_e2e_repo_dir / "workspace_dev"
@@ -58,15 +63,17 @@ async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_serv
 
     # Now make workspace_dev the relative cwd base
     old_cwd = os.getcwd()
-    os.chdir(live_e2e_repo_dir)
+    if not save_app:
+        os.chdir(workspace_path)
 
     # Build the agent graph using its default (production) tools.
     # These tools will connect to the live_mcp_server_fixture.
-    from agent.agent_graph import build_graph
+    from agent.agent_graph import compile_agent_graph
     from agent.prompts.initial_scaffold import INITIAL_SCAFFOLD_PROMPT
 
-    agent_graph = build_graph()
+    agent_graph = compile_agent_graph(interrupt_before=[])
 
+    app_slug = None
     try:
         thread_id = f"live-e2e-test-{os.getpid()}"
         initial_prompt = f"{INITIAL_SCAFFOLD_PROMPT}\n\nHere is the user's request:\n\n{prompt}"
@@ -86,7 +93,16 @@ async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_serv
         last_message = final_state.get("messages", [])[-1]
         assert "error" not in last_message.content.lower(), f"Agent run ended with an error: {last_message.content}"
         final_text = last_message.content.lower()
+        if not ("hello" in final_text and "world" in final_text):
+            logger.error("--- LIVE E2E Test: Dumping full final_state for debugging ---\n%s", json.dumps(final_state, indent=2, default=str))
+            logger.error("--- LIVE E2E Test: Last message content: '%s' ---", last_message.content)
         assert "hello" in final_text and "world" in final_text, "Agent's final message did not confirm the change."
+    finally:
+        # Always log the generated app output directory
+        if app_slug:
+            logger.info(f"Generated app output directory: {workspace_path / app_slug}")
+        else:
+            logger.info(f"Generated app output directory: {workspace_path} (app_slug unknown)")
 
         project_path = live_e2e_repo_dir / "workspace_dev" / app_slug
         page_tsx_path = project_path / "src" / "app" / "page.tsx"
@@ -128,8 +144,8 @@ async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_serv
         logger.info("✅ Assertion Passed: `npm run build` completed successfully.")
 
         logger.info(f"--- LIVE End-to-End Test for prompt '{prompt}' Passed Successfully! ---")
+        logger.info(f"Generated app output directory: {project_path}")
 
-    finally:
         if sys.exc_info()[0]:
             logger.error(f"--- LIVE E2E Test FAILED for prompt '{prompt}'. Dumping state for debugging. ---")
             tree_process = subprocess.run(["ls", "-R"], cwd=live_e2e_repo_dir, capture_output=True, text=True)

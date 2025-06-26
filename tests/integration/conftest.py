@@ -78,16 +78,6 @@ async def shell_run(command: str, cwd: str | None = None, stdin: str | None = No
             "return_code": 0,
         }
 
-    # --- Special Handling for npm run build in smoke tests --- 
-    # The cwd for 'npm run build' in the test is an absolute path ending in 'hello-world-app'
-    if command == "npm run build" and Path(cwd).name == "hello-world-app": 
-        current_app_name = Path(cwd).name
-        # logger.info(f"Mocking successful 'npm run build' for {current_app_name}") # Removed to avoid NameError
-        return {
-            "stdout": f"> {current_app_name}@0.1.0 build\n> next build\n\nMocked build successful!",
-            "stderr": "",
-            "return_code": 0,
-        }
 
     try:
         # Create a mutable copy of the environment to modify the PATH
