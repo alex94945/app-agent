@@ -75,11 +75,20 @@ async def agent_websocket(websocket: WebSocket):
                 logger.info(f"Received prompt: '{prompt}'")
 
                 # --- Phase 1: Call the agent and get the final response ---
-                final_response_content = run_agent(prompt, thread_id)
+                try:
+                    final_message = await run_agent(prompt, thread_id)
+                except Exception as e:
+                    logger.error(f"Error while running agent: {e}", exc_info=True)
+                    await websocket.send_text(
+                        ErrorMessage(d="An internal server error occurred.").model_dump_json()
+                    )
+                    continue
 
-                response_message = FinalMessage(d=final_response_content)
+                response_message = FinalMessage(d=final_message.content)
                 await websocket.send_text(response_message.model_dump_json())
-                logger.info(f"Sent agent's final response for thread '{thread_id}'.")
+                logger.info(
+                    f"Sent agent's final response for thread '{thread_id}'."
+                )
 
             except json.JSONDecodeError:
                 logger.error(f"Failed to decode incoming JSON: {raw_data}")

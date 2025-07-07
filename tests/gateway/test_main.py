@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
 from fastapi.routing import APIRoute # For debug printing
 from starlette.routing import WebSocketRoute # For debug printing
@@ -14,7 +14,7 @@ def test_health_check():
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
-@patch('gateway.main.run_agent', new_callable=MagicMock)
+@patch('gateway.main.run_agent', new_callable=AsyncMock)
 def test_websocket_agent_integration(mock_run_agent):
     """
     Tests that the /api/agent WebSocket endpoint correctly calls the agent
@@ -27,7 +27,7 @@ def test_websocket_agent_integration(mock_run_agent):
     print("Registered HTTP routes:", http_paths)
     # 1. Configure the mock for the agent function
     mock_response = "This is the agent's mocked response."
-    mock_run_agent.return_value = mock_response
+    mock_run_agent.return_value = MagicMock(content=mock_response)
 
     client = TestClient(app)
     with client.websocket_connect("/api/agent") as websocket:
