@@ -29,8 +29,11 @@ async def lsp_definition(file_path: str, line: int, character: int, project_subd
     absolute_file_path = workspace_path / file_path
     file_uri = absolute_file_path.as_uri()
 
-    logger.info(f"Getting definition for {file_uri} (workspace: {workspace_path}) at {line}:{character}")
-    return await manager.get_definition(file_uri, line, character)
+    logger.info(
+        f"Getting definition for {file_uri} (workspace: {workspace_path}) at {line}:{character}"
+    )
+    # Use absolute path for the LSP request; keep URI for logging purposes only
+    return await manager.get_definition(str(absolute_file_path), line, character)
 
 @tool(args_schema=LspInput)
 async def lsp_hover(file_path: str, line: int, character: int, project_subdirectory: Optional[str] = None) -> Dict[str, Any]:
@@ -45,8 +48,11 @@ async def lsp_hover(file_path: str, line: int, character: int, project_subdirect
     absolute_file_path = workspace_path / file_path
     file_uri = absolute_file_path.as_uri()
 
-    logger.info(f"Getting hover for {file_uri} (workspace: {workspace_path}) at {line}:{character}")
-    return await manager.get_hover(file_uri, line, character)
+    logger.info(
+        f"Getting hover for {file_uri} (workspace: {workspace_path}) at {line}:{character}"
+    )
+    # Use absolute path for the LSP request; keep URI for logging purposes only
+    return await manager.get_hover(str(absolute_file_path), line, character)
 
 class LspWorkspaceConfigInput(BaseModel):
     project_subdirectory: Optional[str] = Field(default=None, description="Optional project subdirectory within the repository. If provided, this is the LSP workspace root.")
