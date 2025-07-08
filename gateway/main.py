@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 from contextlib import asynccontextmanager
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -34,13 +35,15 @@ async def lifespan(app: FastAPI):
     # Code here would run on shutdown
     logger.info("--- Gateway Shutdown ---")
 
+
 # Create the FastAPI app instance with the lifespan manager
 app = FastAPI(
     title="Autonomous AI Agent Gateway",
     description="API Gateway for the Autonomous AI Agent",
     version="0.1.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
+
 
 @app.get("/health", tags=["Health"])
 async def health_check():
@@ -49,6 +52,7 @@ async def health_check():
     """
     logger.info("Health check endpoint was called.")
     return {"status": "ok"}
+
 
 @app.websocket("/api/agent")
 async def agent_websocket(websocket: WebSocket):
@@ -77,34 +81,41 @@ async def agent_websocket(websocket: WebSocket):
                 # --- Phase 1: Call the agent and get the final response ---
                 try:
                     final_message = await run_agent(prompt, thread_id)
-                except Exception as e:
+                except RuntimeError as e:
                     logger.error(f"Error while running agent: {e}", exc_info=True)
                     await websocket.send_text(
-                        ErrorMessage(d="An internal server error occurred.").model_dump_json()
+                        ErrorMessage(
+                            d="An internal server error occurred."
+                        ).model_dump_json()
                     )
                     continue
 
                 response_message = FinalMessage(d=final_message.content)
                 await websocket.send_text(response_message.model_dump_json())
-                logger.info(
-                    f"Sent agent's final response for thread '{thread_id}'."
-                )
+                logger.info(f"Sent agent's final response for thread '{thread_id}'.")
 
             except json.JSONDecodeError:
                 logger.error(f"Failed to decode incoming JSON: {raw_data}")
-                await websocket.send_text(ErrorMessage(d="Invalid JSON format.").model_dump_json())
+                await websocket.send_text(
+                    ErrorMessage(d="Invalid JSON format.").model_dump_json()
+                )
 
     except WebSocketDisconnect:
         logger.info("WebSocket connection closed.")
     except Exception as e:
-        logger.error(f"An unexpected error occurred in the WebSocket: {e}", exc_info=True)
+        logger.error(
+            f"An unexpected error occurred in the WebSocket: {e}", exc_info=True
+        )
         # Attempt to send an error message before closing
         try:
-            await websocket.send_text(ErrorMessage(d="An internal server error occurred.").model_dump_json())
+            await websocket.send_text(
+                ErrorMessage(d="An internal server error occurred.").model_dump_json()
+            )
         except Exception:
-            pass # Ignore if sending fails
+            pass  # Ignore if sending fails
     finally:
         logger.info("Closing WebSocket connection handler.")
+
 
 # To run this application:
 # uvicorn gateway.main:app --host 0.0.0.0 --port 8000 --reload
