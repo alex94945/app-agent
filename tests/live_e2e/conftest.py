@@ -4,6 +4,8 @@ from pathlib import Path
 import os
 import threading
 import uvicorn
+import socket
+import asyncio
 import subprocess
 from typing import Optional, List
 import logging
@@ -30,21 +32,60 @@ class _DirEntry(BaseModel):
 
 # --- Real Tool Implementations ---
 
+async def _stream_and_log(stream: asyncio.StreamReader, logger: logging.Logger, log_prefix: str) -> str:
+    """Reads from a stream line by line, logs each line, and returns the full content."""
+    output_lines = []
+    while not stream.at_eof():
+        line = await stream.readline()
+        if not line:
+            break
+        decoded_line = line.decode().rstrip()
+        logger.info(f"{log_prefix}: {decoded_line}")
+        output_lines.append(decoded_line)
+    return "\n".join(output_lines)
+
 @live_mcp_server.tool(name="shell.run")
 async def actual_shell_run(command: str, cwd: Optional[str] = None, stdin: Optional[str] = None) -> _ShellRunOutput:
-    """This is a real shell command executor. It runs in the test's CWD."""
+    """This is a real shell command executor that runs asynchronously and streams output."""
     logger = logging.getLogger("live_e2e.shell_tool")
     try:
-        # subprocess.run resolves `cwd` relative to the current process's CWD.
-        # Since the server is now function-scoped, this will be the correct temp dir.
-        process = subprocess.run(
-            command, shell=True, check=False, capture_output=True, text=True, cwd=cwd, input=stdin
+        logger.info(f"shell.run executing: {command} in {cwd or '.'}")
+        process = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.PIPE,  # Always create a pipe for stdin
+            cwd=cwd,
         )
-        logger.info(f"shell.run executed: {command} in {cwd or '.'}")
-        return _ShellRunOutput(stdout=process.stdout, stderr=process.stderr, return_code=process.returncode)
+
+        if process.stdin:
+            if stdin:
+                process.stdin.write(stdin.encode())
+                await process.stdin.drain()
+            # If no stdin is provided, close the pipe immediately.
+            # This signals to the child process that it's running non-interactively.
+            process.stdin.close()
+
+        # Concurrently stream stdout and stderr
+        stdout_task = asyncio.create_task(_stream_and_log(process.stdout, logger, "STDOUT"))
+        stderr_task = asyncio.create_task(_stream_and_log(process.stderr, logger, "STDERR"))
+
+        # Wait for the streams to be fully read, then wait for the process to finish.
+        # This order avoids a deadlock where the process waits for pipes to be read
+        # and the readers wait for the process to exit.
+        stdout, stderr = await asyncio.gather(stdout_task, stderr_task)
+        await process.wait()
+
+        logger.info(f"shell.run finished: {command} with return code {process.returncode}")
+        return _ShellRunOutput(
+            stdout=stdout,
+            stderr=stderr,
+            return_code=process.returncode,
+        )
     except Exception as e:
         logger.error(f"shell.run FAILED: {command} with exception: {e}")
         return _ShellRunOutput(stdout="", stderr=str(e), return_code=-1)
+
 
 @live_mcp_server.tool(name="fs.write")
 async def actual_fs_write(path: str, content: str) -> None:
@@ -108,11 +149,18 @@ def pytest_generate_tests(metafunc: pytest.Metafunc):
 
 # --- Function-Scoped Live MCP Server Fixture ---
 
+def find_free_port():
+    """Finds a free port on the host machine."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
 @pytest.fixture
 def live_mcp_server_fixture(request):
-    """Starts a live, real MCP server for each E2E test function."""
+    """Pytest fixture to run the live MCP server in a background thread."""
     host = "127.0.0.1"
-    port = 7802
+    port = find_free_port()
+    # Set the MCP_SERVER_URL for the agent to connect to
     os.environ["MCP_SERVER_URL"] = f"http://{host}:{port}/mcp"
     get_settings().MCP_SERVER_URL = os.environ["MCP_SERVER_URL"]
 
@@ -135,5 +183,16 @@ def live_mcp_server_fixture(request):
 
     server = UvicornTestServer(app=live_mcp_server.http_app(), host=host, port=port)
     server.run_in_thread()
-    yield
-    server.stop()
+
+    # Conditionally silence streaming logs if --streaming is not provided
+    shell_logger = logging.getLogger("live_e2e.shell_tool")
+    original_level = shell_logger.level
+    if not request.config.getoption("--streaming"):
+        shell_logger.setLevel(logging.CRITICAL)
+
+    try:
+        yield
+    finally:
+        server.stop()
+        # Restore original logging level
+        shell_logger.setLevel(original_level)

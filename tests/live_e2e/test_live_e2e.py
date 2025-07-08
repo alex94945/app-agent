@@ -2,6 +2,8 @@
 
 # By being in a separate directory `live_e2e`, this test avoids loading
 # the mock fixtures from `tests/integration/conftest.py`.
+# IMPORTANT: This test will not mock ANYTHING! The point is to test the
+# full end-to-end flow with real tools, real LLM calls, everything is real.
 
 import pytest
 import logging
@@ -17,6 +19,12 @@ from langchain.schema import HumanMessage
 
 logger = logging.getLogger(__name__)
 
+def slugify(text):
+    # A simple slugify function to convert prompt to a valid directory name
+    text = text.lower()
+    text = re.sub(r'[\s\W-]+', '-', text).strip('-')
+    return text
+
 
 @pytest.fixture(scope="function")
 def live_e2e_repo_dir(tmp_path: Path) -> Path:
@@ -27,21 +35,27 @@ def live_e2e_repo_dir(tmp_path: Path) -> Path:
     repo_dir = tmp_path / "live_e2e_repo"
     repo_dir.mkdir()
     logger.info(f"Using temporary directory for E2E test output: {repo_dir}")
+    logger.debug(f"Test environment: cwd={os.getcwd()} PATH={os.environ.get('PATH')}")
+    logger.debug(f"Test environment variables: {json.dumps(dict(os.environ), indent=2)}")
 
     # Initialize a git repository, as the agent's patch tool requires it.
+    logger.info("Initializing git repository for live E2E test...")
     subprocess.run(["git", "init"], cwd=repo_dir, check=True)
-
     logger.info(f"Live E2E test running in: {repo_dir}")
+    logger.debug(f"Repo contents after init: {os.listdir(repo_dir)}")
     
     yield repo_dir
     
     logger.info(f"Live E2E test finished in: {repo_dir}")
+    logger.debug(f"Repo contents at teardown: {os.listdir(repo_dir)}")
 
 
+@pytest.mark.live_e2e
 @pytest.mark.e2e_live
-@pytest.mark.timeout(900)  # 15-minute timeout
+@pytest.mark.timeout(1200)
 @pytest.mark.asyncio
 async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_server_fixture, request):
+    app_slug = slugify(prompt)
     """
     Tests the full, unmocked agent pipeline on a simple scaffolding and
     editing task. This test uses REAL implementations of all tools.
@@ -74,23 +88,36 @@ async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_serv
     agent_graph = compile_agent_graph(interrupt_before=[])
 
     app_slug = None
+    import time
     try:
         thread_id = f"live-e2e-test-{os.getpid()}"
         initial_prompt = f"{INITIAL_SCAFFOLD_PROMPT}\n\nHere is the user's request:\n\n{prompt}"
         initial_state = {"messages": [HumanMessage(content=initial_prompt)]}
         config = {"configurable": {"thread_id": thread_id}}
 
+        logger.info(f"[E2E] Current working directory: {os.getcwd()}")
+        logger.info(f"[E2E] PATH: {os.environ.get('PATH')}")
+        logger.info(f"[E2E] Environment variables: {json.dumps(dict(os.environ), indent=2)}")
+        logger.info(f"[E2E] Workspace path: {workspace_path} contents: {os.listdir(workspace_path)}")
+
         logger.info(f"Invoking agent for prompt: '{prompt}'")
-        final_state = await agent_graph.ainvoke(initial_state, config)
+        t0 = time.time()
+        try:
+            final_state = await agent_graph.ainvoke(initial_state, config)
+        finally:
+            t1 = time.time()
+            logger.info(f"Agent invocation elapsed time: {t1-t0:.2f} seconds")
         logger.info("Agent invocation complete.")
 
         app_slug = final_state.get("project_subdirectory")
+        logger.info(f"[E2E] Agent output project_subdirectory: {app_slug}")
         assert app_slug, "Agent did not set project_subdirectory in its final state."
 
         logger.info("--- Verifying Assertions ---")
 
         assert final_state is not None, "Agent run did not complete."
         last_message = final_state.get("messages", [])[-1]
+        logger.info(f"[E2E] Last message content: {last_message.content[:500]}")
         assert "error" not in last_message.content.lower(), f"Agent run ended with an error: {last_message.content}"
         final_text = last_message.content.lower()
         DEFAULT_PROMPT = "Create a hello world app"

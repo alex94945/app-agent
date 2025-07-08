@@ -23,6 +23,12 @@ def pytest_addoption(parser):
         default=False,
         help="Save the generated E2E app to ./workspace_dev instead of a temp directory.",
     )
+    parser.addoption(
+        "--streaming",
+        action="store_true",
+        default=False,
+        help="Enable streaming output for live E2E shell commands.",
+    )
     # Add --prompts option only if not already added by a sub-package conftest
     try:
         parser.addoption(
