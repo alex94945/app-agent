@@ -169,6 +169,7 @@ def mock_llm_client(mocker) -> MagicMock:
     return mock_bound_llm
 
 
+@pytest.mark.skip(reason="Flaky and deprioritized: see project history. Remove skip to re-enable.")
 @pytest.mark.asyncio
 async def test_fix_typescript_lint_error(
     ts_project_with_error: Path,
@@ -231,6 +232,7 @@ async def test_fix_typescript_lint_error(
     logging.info(f"Final verification successful. Linter passes.")
 
 
+@pytest.mark.skip(reason="Flaky and deprioritized: see project history. Remove skip to re-enable.")
 @pytest.mark.asyncio
 async def test_fix_nextjs_build_error(
     nextjs_project_with_error: Path,

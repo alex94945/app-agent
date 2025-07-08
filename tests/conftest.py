@@ -90,7 +90,12 @@ def agent_graph_fixture():
     return factory
 
 
-# --- Pydantic Schema for 'fs.list_dir' tool output entries ---
+# --- Pydantic Schemas for Tool Outputs ---
+
+class _ShellRunOutput(BaseModel):
+    stdout: str
+    stderr: str
+    return_code: int
 
 class _DirEntry(BaseModel):
     name: str
@@ -217,6 +222,40 @@ def build_patch_tools_server() -> FastMCP:
             )
 
     return server
+
+# --- Pytest Fixture for the Shell Client ---
+
+@pytest_asyncio.fixture
+async def shell_client() -> AsyncIterator[Client]:
+    """Yields a FastMCP Client connected to a server with a shell.run tool using _ShellRunOutput schema."""
+    server = FastMCP("ShellToolsTestServer")
+
+    @server.tool(name="shell.run")
+    async def actual_shell_run(command: str, cwd: Optional[str] = None, stdin: Optional[str] = None, json: bool = False):
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd
+            )
+            stdout_bytes, stderr_bytes = await proc.communicate(input=stdin.encode() if stdin else None)
+            stdout = stdout_bytes.decode().strip() if stdout_bytes else ""
+            stderr = stderr_bytes.decode().strip() if stderr_bytes else ""
+            return_code = proc.returncode if proc.returncode is not None else -1
+            result_obj = _ShellRunOutput(stdout=stdout, stderr=stderr, return_code=return_code)
+            if json:
+                return result_obj.model_dump()
+            return result_obj
+        except Exception as e:
+            return _ShellRunOutput(
+                stdout="",
+                stderr=f"Error in actual_shell_run: {str(e)}",
+                return_code=-1
+            )
+    async with Client(server) as c:
+        yield c
 
 # --- Pytest Fixture for the Patch Client ---
 

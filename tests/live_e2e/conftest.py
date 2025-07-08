@@ -12,6 +12,7 @@ from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 from common.config import get_settings
+from tests.conftest import _ShellRunOutput
 
 # This is a special, "fully real" MCP server for the live E2E test.
 # Its tool implementations use real subprocesses and file system access, not mocks.
@@ -19,10 +20,6 @@ live_mcp_server = FastMCP(name="Live-E2E-MCP-Server")
 
 # --- Tool Output Schemas ---
 
-class _ShellRunOutput(BaseModel):
-    stdout: str
-    stderr: str
-    return_code: int
 
 class _DirEntry(BaseModel):
     name: str
