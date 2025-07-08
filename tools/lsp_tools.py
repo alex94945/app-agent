@@ -32,7 +32,7 @@ async def _prepare_lsp(
         repo_dir / project_subdirectory if project_subdirectory else repo_dir
     )
 
-    manager = await get_lsp_manager(workspace_path)
+    manager = await get_lsp_manager(str(workspace_path))
     await manager.start()
 
     absolute_file_path = workspace_path / file_path
