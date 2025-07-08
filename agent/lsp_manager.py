@@ -411,8 +411,6 @@ class LspManager:
 
     def _update_tsconfig_mtime(self):
         """Updates the stored modification time of tsconfig.json if it exists."""
-        if not self._tsconfig_path:
-            self._tsconfig_path = Path(self.workspace_path) / "tsconfig.json"
 
         if self._tsconfig_path.exists() and self._tsconfig_path.is_file():
             try:
@@ -431,9 +429,6 @@ class LspManager:
 
     async def check_and_restart_on_tsconfig_update(self):
         """Checks if tsconfig.json has been modified and restarts the LSP server if so."""
-        if not self._tsconfig_path:  # Ensure path is initialized
-            self._tsconfig_path = Path(self.workspace_path) / "tsconfig.json"
-
         if not self._tsconfig_path.exists() or not self._tsconfig_path.is_file():
             logger.debug(
                 f"No tsconfig.json found at {self._tsconfig_path}. No restart needed based on it."
