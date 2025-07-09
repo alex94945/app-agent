@@ -56,7 +56,7 @@ PTYManager ────┤  (set when PTY closes)
                │
                └─ continues next agent step
 Gateway ═ message relay only (task_started, task_log, task_finished)
-UI      ═ renders log stream & final status
+UI      ═ Renders logs in a dedicated tabbed panel (see UI Design section).
 ```
 
 ---
@@ -96,7 +96,27 @@ No polling, no extra LLM turns.
 
 ---
 
-## 9 Open points&#x20;
+## 7	UI Design
+
+To avoid cluttering the main chat interface with verbose log output, the UI will adopt a tabbed panel design, separating the agent conversation from detailed task output.
+
+*   **Layout**: The main view will be split into two primary panels:
+    *   **Chat Panel** (left): Displays the user-agent conversation.
+    *   **Content Panel** (right): Contains tabs for different views.
+*   **Tabs**: The content panel will feature at least two tabs:
+    *   **Terminal**: A dedicated view that renders the real-time output of PTY tasks.
+    *   **Live App Preview**: An `iframe` that displays the live preview of the scaffolded web application.
+*   **User Flow**:
+    1.  When the agent initiates a PTY task, a concise message appears in the chat (e.g., `> Starting task: create-next-app`).
+    2.  The UI automatically switches the Content Panel to the **Terminal** tab.
+    3.  The user can watch the logs stream in real-time in the terminal view.
+    4.  The user can manually switch back to the **Live App Preview** or other tabs at any time.
+
+This approach keeps the chat history clean and provides a familiar, organized interface for developers to monitor progress.
+
+---
+
+## 8	Open points 
 
 * Evaluate `ruspty` vs `ptyprocess` after load testing.
 * Define regex milestone catalogue when semantic parsing is prioritized.

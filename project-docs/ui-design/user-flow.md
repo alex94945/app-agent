@@ -32,10 +32,10 @@ Give end‑users a **single conversational interface** that:
 | :--- | :--- | :--- | :--- |
 | 1 | **Prompt** – user types “Build a recipe‑sharing Next.js app with login & image uploads.” | `user_prompt` | Chat bubble (right) shows the prompt. “Typing…” indicator appears for agent. |
 | 2 | **Agent Ack** – Planner returns: “Sure! I’ll start scaffolding your recipe‑sharing app.” | `agent_response` | Bubble (left) displays text. |
-| 3 | **Start task** – Executor calls `run_shell(..., pty=True)`. The tool call blocks internally while the PTY runs. | `task_started` payload `{taskId}` | Mini progress bar & collapsible **Log panel** appear under latest agent bubble. |
-| 4 | **Stream logs** – PTYManager emits chunks via the Gateway. | `task_log` | Logs append in real time; scrollbar auto‑scrolls unless user hovers. |
+| 3 | **Start task** – Executor calls `run_shell(..., pty=True)`. The tool call blocks internally while the PTY runs. | `task_started` payload `{taskId}` | A concise message appears in chat (`> Starting task...`). The UI switches the main content panel to the **Terminal** tab. |
+| 4 | **Stream logs** – PTYManager emits chunks via the Gateway. | `task_log` | Logs append in real time within the **Terminal** tab. The view auto-scrolls. |
 | 5 | **Task finished** – PTYManager signals completion. The agent's `run_shell` tool call unblocks and returns the result. | `task_finished` | Progress bar turns green (success) or red (error). |
-| 6 | **Agent summary** – Agent processes the tool result and plans its next step: “Scaffold complete! Here’s a live preview.” | `agent_response` | UI receives the message and refreshes the **Preview pane**  beside the chat. |
+| 6 | **Agent summary** – Agent processes the tool result and plans its next step: “Scaffold complete! Here’s a live preview.” | `agent_response` | A new agent message appears in chat. The UI switches the main content panel to the **Live App Preview** tab and refreshes it. |
 | 7 | **Iterate** – User: “Change theme to dark mode.” | Repeat 1‑6 for incremental edits (smaller tasks). | |
 
 ---
@@ -73,12 +73,12 @@ sequenceDiagram
 
 ## 4 UX requirements
 
-1.  **Unified chat thread** – All system, agent, and task events appear chronologically.
+1.  **Unified chat thread** – All high-level system, agent, and task *notifications* appear chronologically in the chat. Verbose output like logs appears in a dedicated panel.
 2.  **Non‑blocking typing** – User can continue typing new messages while logs stream.
 3.  **Auto‑scroll opt‑out** – Pause auto‑scroll when user hovers over logs.
 4.  **Visual status cues** – Progress bar or spinner per task; colour‑coded on completion.
 5.  **Error surfacing** – If `task_finished.state == error`, highlight log pane and show summary error bubble.
-6.  **Preview panel** – Renders latest compiled app; auto‑refresh after successful scaffold or edit.
+6.  **Content Panel** – A tabbed view renders either the live app preview or the terminal logs. The preview auto-refreshes after a successful scaffold or edit.
 7.  **Accessibility** – Live‑region ARIA updates for screen readers; keyboard shortcuts for sending prompt (`Cmd+Enter`).
 
 ---

@@ -262,15 +262,21 @@
         -   [x] Added PTY message schemas to `common/ws_messages.py`.
     -   [x] Testing: WebSocket client test that initiates a PTY task and asserts that `task_started`, `task_log`, and `task_finished` events are received correctly.
 
--   [ ] **4. UI: Render Real-Time Log Stream**
-    -   [ ] Action: Update the Next.js UI to render the live output from the PTY.
-    -   [ ] File: `ui/src/app/components/ChatInterface.tsx` (or a new `LogDisplay.tsx` component).
+-   [ ] **4. UI: Implement Tabbed Terminal and Preview Panel**
+    -   [ ] Action: Refactor the UI to support a tabbed view for real-time PTY logs and the application preview, separating them from the chat.
+    -   [ ] Files:
+        -   `ui/src/app/page.tsx` (main layout)
+        -   `ui/src/app/components/MainPanel.tsx` (new: for tab switching)
+        -   `ui/src/app/components/TerminalView.tsx` (new: for rendering logs)
+        -   `ui/src/app/components/ChatInterface.tsx` (refactored)
+        -   `ui/src/types/ws_messages.ts` (new: for frontend type definitions)
     -   [ ] Details:
-        -   [ ] Handle incoming `task_started`, `task_log`, and `task_finished` WebSocket messages.
-        -   [ ] On `task_started`, create a new log view area for the task.
-        -   [ ] On `task_log`, append the decoded `chunk` to the corresponding log view.
-        -   [ ] On `task_finished`, display the final status (e.g., success, error, exit code).
-    -   [ ] Testing: Manual E2E test: run the full stack, issue a command like "create a ciao world app," and watch the `npx` command's output stream to the UI in real-time.
+        -   [ ] **State Management:** Lift WebSocket connection logic and message state from `ChatInterface` up to `page.tsx`.
+        -   [ ] **Layout:** Modify `page.tsx` to use a new `MainPanel` component that will contain the tabbed interface for the "Terminal" and "Live Preview".
+        -   [ ] **Terminal View:** Create `TerminalView.tsx` to receive log data as props and render it, handling auto-scrolling.
+        -   [ ] **Message Handling:** Update the main page's WebSocket handler to process `task_started`, `task_log`, and `task_finished` messages. On `task_started`, switch to the "Terminal" tab. On `task_finished` and subsequent agent messages, switch to the "Live App Preview" tab.
+        -   [ ] **Chat Interface:** Simplify `ChatInterface.tsx` to be a presentational component, receiving messages and sending user input via props.
+    -   [ ] Testing: Manual E2E test: run the full stack, issue a command like "create a ciao world app," watch the UI switch to the terminal tab and stream logs, then switch to the preview when done.
 
 -   [ ] **4. StackBlitz WebContainer Integration (Proof of Concept):**
     -   [ ] Action: Integrate WebContainer API into Next.js UI.
