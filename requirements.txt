@@ -1,7 +1,9 @@
 ######## Core Web / API ########
 fastapi~=0.115            # 0.112 adds official 3.13 wheels, 0.115+ is more current
 uvicorn~=0.34             # >=0.32 built against 3.13, 0.34 is more current
-python-dotenv~=1.1
+python-dotenv
+ptyprocess~=0.7
+psutil~=7.0~=1.1
 websockets~=15.0          # >=13.0 validated for 3.13
 pydantic~=2.11            # 2.11.x has explicit 3.13 support
 pydantic-settings~=2.9

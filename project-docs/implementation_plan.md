@@ -229,30 +229,48 @@
 
 ---
 
-### **Phase 3: UI, WebContainer Preview & Streaming**
+### **Phase 3: PTY Streaming for Real-Time Scaffolding**
 
-**(Corresponds to Design Doc MVP Phase 3)**
+**(Corresponds to Design Doc v2: PTY-Streaming)**
 
--   [ ] **1. Next.js UI - Basic Structure:**
-    -   [ ] Action: Set up Next.js UI.
-    -   [ ] Directory: `ui/`
-    -   [ ] Details: `npx create-next-app@latest`. Basic layout, chat input, log display, iframe placeholder.
-    -   [ ] Testing: `npm run dev` in `ui/`.
+-   [x] **1. Backend: PTY Manager & `run_shell` Enhancement**
+    -   [x] Action: Create a `PTYManager` for handling pseudo-terminal processes and update the `run_shell` tool.
+    -   [x] Files: `agent/pty/manager.py` (new), `tools/shell_mcp_tools.py`, `requirements.txt`.
+    -   [x] Details:
+        -   [x] Add `ptyprocess~=0.7` and `psutil~=7.0` to `requirements.txt`.
+        -   [x] Implement `PTYManager` as a singleton to spawn, stream, and manage PTY processes.
+        -   [x] Modify `run_shell` to accept `pty: bool = False`. If `True`, it delegates to `PTYManager` and returns a `TaskHandle`. If `False`, it maintains the existing synchronous behavior for backward compatibility.
+        -   [x] The `PTYManager` is responsible for emitting `task_started`, `task_log`, and `task_finished` events via callbacks.
+    -   [x] Testing: Unit tests for `PTYManager` (spawning, cleanup). Unit tests for `run_shell`'s dual sync/async behavior.
 
--   [ ] **2. Next.js UI - WebSocket Connection to FastAPI (with New Schema):**
-    -   [ ] Action: Implement client-side JS for WebSocket, using 1-byte prefix schema.
-    -   [ ] File: `ui/app/components/ChatInterface.tsx`, `common/ws_messages.ts`.
-    -   [ ] Details: Connect, send input, handle incoming messages based on `t` field.
-    -   [ ] Testing: Start gateway & UI. Send messages, verify `FinalMessage` displayed.
+-   [x] **2. Agent: Await PTY Task Completion**
+    -   [x] Action: Update the agent executor to handle and await asynchronous PTY tasks.
+    -   [x] Files: `agent/executor/runner.py`, `agent/state.py`.
+    -   [x] Details:
+        -   [x] When `run_shell` returns a `PTYTask`, the `run_single_tool` function in the runner awaits its completion using `PTYManager.wait_for_completion(taskId)`.
+        -   [x] This deterministically blocks the agent's execution graph until the long-running PTY process is complete.
+        -   [x] The `AgentState` was updated to include `pty_callbacks` to pass handlers from the gateway to the tool.
+    -   [x] Testing: Integration test where the agent calls `run_shell(pty=True)` and correctly waits for completion before proceeding to the next step.
 
--   [ ] **3. FastAPI Gateway & Agent - Full Streaming:**
-    -   [ ] Action: Implement full streaming of LLM tokens and tool events.
-    -   [ ] Files: `gateway/main.py`, `agent/agent_graph.py`.
+-   [x] **3. Gateway: Relay PTY Events via WebSocket**
+    -   [x] Action: Modify the WebSocket handler to stream all agent and PTY events.
+    -   [x] File: `gateway/main.py`, `common/ws_messages.py`.
+    -   [x] Details:
+        -   [x] The WebSocket handler now defines PTY callbacks (`on_started`, `on_output`, `on_complete`) and injects them into the `AgentState`.
+        -   [x] The handler was switched from `ainvoke` to `astream_events` to process the full event stream from LangGraph.
+        -   [x] It now relays tool calls, tool results, and PTY task messages (`task_started`, `task_log`, `task_finished`) to the UI.
+        -   [x] Added PTY message schemas to `common/ws_messages.py`.
+    -   [x] Testing: WebSocket client test that initiates a PTY task and asserts that `task_started`, `task_log`, and `task_finished` events are received correctly.
+
+-   [ ] **4. UI: Render Real-Time Log Stream**
+    -   [ ] Action: Update the Next.js UI to render the live output from the PTY.
+    -   [ ] File: `ui/src/app/components/ChatInterface.tsx` (or a new `LogDisplay.tsx` component).
     -   [ ] Details:
-        -   [ ] LangGraph agent uses `astream_events`, observer/callback captures events.
-        -   [ ] Events formatted to 1-byte prefix schema.
-        -   [ ] FastAPI iterates agent stream, sends messages over WebSocket.
-    -   [ ] Testing: Inspect WebSocket traffic. UI chat log updates dynamically.
+        -   [ ] Handle incoming `task_started`, `task_log`, and `task_finished` WebSocket messages.
+        -   [ ] On `task_started`, create a new log view area for the task.
+        -   [ ] On `task_log`, append the decoded `chunk` to the corresponding log view.
+        -   [ ] On `task_finished`, display the final status (e.g., success, error, exit code).
+    -   [ ] Testing: Manual E2E test: run the full stack, issue a command like "create a ciao world app," and watch the `npx` command's output stream to the UI in real-time.
 
 -   [ ] **4. StackBlitz WebContainer Integration (Proof of Concept):**
     -   [ ] Action: Integrate WebContainer API into Next.js UI.

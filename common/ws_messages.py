@@ -40,3 +40,34 @@ class ErrorMessage(WsMessage):
     """A message indicating an error occurred in the agent's process."""
     t: Literal["error"] = "error"
     d: str = Field(..., description="The error message.")
+
+# --- PTY Task Streaming Messages ---
+from uuid import UUID
+import datetime
+
+class TaskStartedData(BaseModel):
+    task_id: UUID
+    name: str
+    started_at: datetime.datetime
+
+class TaskStartedMessage(WsMessage):
+    t: Literal["task_started"] = "task_started"
+    d: TaskStartedData
+
+class TaskLogData(BaseModel):
+    task_id: UUID
+    chunk: str
+
+class TaskLogMessage(WsMessage):
+    t: Literal["task_log"] = "task_log"
+    d: TaskLogData
+
+class TaskFinishedData(BaseModel):
+    task_id: UUID
+    state: Literal["success", "error", "timeout"]
+    exit_code: Optional[int]
+    duration_ms: float
+
+class TaskFinishedMessage(WsMessage):
+    t: Literal["task_finished"] = "task_finished"
+    d: TaskFinishedData

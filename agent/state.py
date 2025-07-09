@@ -1,6 +1,6 @@
 # agent/state.py
 
-from typing import TypedDict, List, Annotated, Optional
+from typing import TypedDict, List, Annotated, Optional, Dict, Callable, Any, Awaitable
 from pydantic import Field
 from langchain_core.messages import BaseMessage
 import operator
@@ -28,3 +28,6 @@ class AgentState(TypedDict):
 
     # The name of the tool chosen by the reason step, to be used by the arg step.
     next_tool_to_call: Optional[str] = Field(default=None, description="The name of the tool selected by the reasoning planner.")
+
+    # Callbacks for PTY streaming. This is not persisted across runs.
+    pty_callbacks: Optional[Dict[str, Callable[[Any], Awaitable[None]]]]

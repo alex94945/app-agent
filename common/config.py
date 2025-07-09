@@ -57,7 +57,7 @@ class Settings(BaseSettings):
 
     # Host and port for the FastAPI gateway.
     HOST: str = "0.0.0.0"
-    PORT: int = 8000
+    PORT: int = 8001
 
     # Pydantic Settings configuration
     model_config = SettingsConfigDict(

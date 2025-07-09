@@ -1,5 +1,26 @@
 # App-Agent
 
+## Running the Application
+
+To run the application, you will need two terminal windows.
+
+**1. Start the Backend Gateway:**
+
+```bash
+uvicorn gateway.main:app --host 0.0.0.0 --port 8001 --reload
+```
+
+**2. Start the Frontend UI:**
+
+In a separate terminal, navigate to the `ui` directory and run:
+
+```bash
+cd ui
+npm run dev
+```
+
+The UI will be available at [http://localhost:8000](http://localhost:8000).
+
 App-Agent is an agent-centric, LLM-powered codebase designed for automated code modification, diagnostics, and self-healing workflows. It leverages the MCP (Machine Control Protocol) ecosystem, FastMCP in-memory servers for robust tool testing, and a modular agent architecture to support advanced developer-assist and code-repair scenarios.
 
 ## Features

@@ -2,11 +2,29 @@
 
 import logging
 import uuid
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 import json
+import datetime
+from typing import Dict
+from uuid import UUID
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from langchain_core.messages import HumanMessage, AIMessage
+
+from agent.agent_graph import agent_graph
+from agent.state import AgentState
 from common.config import settings, PROJECT_ROOT
-from common.ws_messages import FinalMessage, ErrorMessage
-from agent.agent_graph import run_agent
+from common.ws_messages import (
+    ErrorMessage,
+    FinalMessage,
+    ToolCallMessage,
+    ToolResultMessage,
+    TaskStartedMessage,
+    TaskLogMessage,
+    TaskFinishedMessage,
+    TaskStartedData,
+    TaskLogData,
+    TaskFinishedData,
+)
 
 # Configure logging
 # The log level is loaded from the settings instance
@@ -58,6 +76,10 @@ async def health_check():
 async def agent_websocket(websocket: WebSocket):
     """
     Handles the WebSocket connection for the agent.
+    Accepts user prompts and streams back agent events and PTY logs.
+    """
+    """
+    Handles the WebSocket connection for the agent.
     Accepts user prompts and streams back agent responses.
     """
     await websocket.accept()
@@ -68,37 +90,92 @@ async def agent_websocket(websocket: WebSocket):
         thread_id = str(uuid.uuid4())
         logger.info(f"Generated new thread_id for connection: {thread_id}")
 
+        # --- PTY Task Management ---
+        task_start_times: Dict[UUID, datetime.datetime] = {}
+
+        async def on_pty_started(task_id: UUID, name: str):
+            task_start_times[task_id] = datetime.datetime.now(datetime.timezone.utc)
+            await websocket.send_text(
+                TaskStartedMessage(
+                    d=TaskStartedData(
+                        task_id=task_id,
+                        name=name,
+                        started_at=task_start_times[task_id]
+                    )
+                ).model_dump_json()
+            )
+
+        async def on_pty_output(task_id: UUID, chunk: str):
+            await websocket.send_text(
+                TaskLogMessage(d=TaskLogData(task_id=task_id, chunk=chunk)).model_dump_json()
+            )
+
+        async def on_pty_complete(task_id: UUID, exit_code: int):
+            start_time = task_start_times.pop(task_id, None)
+            duration_ms = (datetime.datetime.now(datetime.timezone.utc) - start_time).total_seconds() * 1000 if start_time else 0
+            await websocket.send_text(
+                TaskFinishedMessage(
+                    d=TaskFinishedData(
+                        task_id=task_id,
+                        exit_code=exit_code,
+                        state="success" if exit_code == 0 else "error",
+                        duration_ms=duration_ms,
+                    )
+                ).model_dump_json()
+            )
+
+        pty_callbacks = {
+            "on_started": on_pty_started,
+            "on_output": on_pty_output,
+            "on_complete": on_pty_complete,
+        }
+
         while True:
-            # Wait for a message from the client
             raw_data = await websocket.receive_text()
             logger.debug(f"Received raw data: {raw_data}")
 
             try:
                 data = json.loads(raw_data)
                 prompt = data.get("prompt", "No prompt provided")
-                logger.info(f"Received prompt: '{prompt}'")
+                logger.info(f"Received prompt: '{prompt}' for thread '{thread_id}'")
 
-                # --- Phase 1: Call the agent and get the final response ---
-                try:
-                    final_message = await run_agent(prompt, thread_id)
-                except RuntimeError as e:
-                    logger.error(f"Error while running agent: {e}", exc_info=True)
+                config = {"configurable": {"thread_id": thread_id}}
+                initial_state = AgentState(
+                    messages=[HumanMessage(content=prompt)],
+                    pty_callbacks=pty_callbacks
+                )
+
+                # --- Stream Agent Events --- #
+                async for event in agent_graph.astream_events(initial_state, config, version="v1"):
+                    kind = event["event"]
+                    
+                    if kind == "on_tool_start":
+                        logger.info(f"Tool Start: {event['name']} with args {event['data'].get('input')}")
+                        await websocket.send_text(
+                            ToolCallMessage(d={"name": event['name'], "args": event['data'].get('input')}).model_dump_json()
+                        )
+
+                    elif kind == "on_tool_end":
+                        logger.info(f"Tool End: {event['name']}")
+                        output = event['data'].get('output')
+                        # Don't send PTY task handles to the UI
+                        if isinstance(output, dict) and output.get("type") == "pty_task":
+                            continue
+                        await websocket.send_text(
+                            ToolResultMessage(d={"name": event['name'], "result": output}).model_dump_json()
+                        )
+
+                # After the stream is finished, get the final state
+                final_state = await agent_graph.aget_state(config)
+                last_message = final_state.values[-1]['messages'][-1]
+                if isinstance(last_message, AIMessage):
                     await websocket.send_text(
-                        ErrorMessage(
-                            d="An internal server error occurred."
-                        ).model_dump_json()
+                        FinalMessage(d=last_message.content).model_dump_json()
                     )
-                    continue
-
-                response_message = FinalMessage(d=final_message.content)
-                await websocket.send_text(response_message.model_dump_json())
-                logger.info(f"Sent agent's final response for thread '{thread_id}'.")
 
             except json.JSONDecodeError:
                 logger.error(f"Failed to decode incoming JSON: {raw_data}")
-                await websocket.send_text(
-                    ErrorMessage(d="Invalid JSON format.").model_dump_json()
-                )
+                await websocket.send_text(ErrorMessage(d="Invalid JSON format.").model_dump_json())
 
     except WebSocketDisconnect:
         logger.info("WebSocket connection closed.")

@@ -6,11 +6,12 @@ from langchain_core.tools import ToolException
 from mcp.shared.exceptions import McpError
 
 from agent.state import AgentState
-from agent.executor.utils import maybe_inject_subdir # Assuming this is the correct path after refactor
+from agent.executor.utils import maybe_inject_subdir
+from agent.pty.manager import get_pty_manager
 
 # Import all necessary tools directly
 from tools.file_io_mcp_tools import read_file, write_file
-from tools.shell_mcp_tools import run_shell
+from tools.shell_mcp_tools import run_shell, PTYTask
 from tools.patch_tools import apply_patch
 from tools.vector_store_tools import vector_search
 from tools.lsp_tools import lsp_definition, lsp_hover
@@ -81,9 +82,22 @@ async def run_single_tool(
         processed_args = maybe_inject_subdir(tool_args, tool_name, state)
         logger.debug(f"Processed args for '{tool_name}': {processed_args}")
 
+        # Add state to args for tools that need it (like run_shell in pty mode)
+        if 'state' not in processed_args:
+            processed_args['state'] = state
+
         # Most tools are async, so use ainvoke
         tool_output = await tool_to_run.ainvoke(processed_args)
         logger.info(f"Tool '{tool_name}' executed. Raw output type: {type(tool_output)}")
+
+        if isinstance(tool_output, PTYTask):
+            logger.info(f"Tool '{tool_name}' returned a PTY task ({tool_output.task_id}). Awaiting completion...")
+            pty_manager = get_pty_manager()
+            await pty_manager.wait_for_completion(tool_output.task_id)
+            logger.info(f"PTY task {tool_output.task_id} completed.")
+            # The output stream was handled by callbacks. Return a simple success message for the agent graph.
+            return f"PTY task '{tool_args.get('task_name', 'Unnamed Task')}' completed successfully."
+
         return tool_output
 
     except ToolException as e:

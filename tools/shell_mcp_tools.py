@@ -1,7 +1,10 @@
 import logging
 import json
-from typing import Dict, Any, Optional
-from pathlib import Path # Added Path import
+import shlex
+from typing import Dict, Any, Optional, Union
+from pathlib import Path
+from uuid import UUID
+
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 
@@ -9,6 +12,8 @@ from mcp import ClientSession
 from common.mcp_session import open_mcp_session
 from mcp.shared.exceptions import McpError, ErrorData
 from common.config import get_settings
+from agent.pty.manager import get_pty_manager
+from agent.state import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +29,14 @@ class RunShellInput(BaseModel):
         default=None,
         description="Content to be passed to the command's standard input."
     )
+    pty: bool = Field(
+        default=False,
+        description="If true, run the command in a pseudo-terminal (PTY) to stream output. This is for long-running processes like dev servers or build scripts."
+    )
+    task_name: Optional[str] = Field(
+        default=None,
+        description="A descriptive name for the task, used for logging and UI display when pty=True."
+    )
 
 # --- Pydantic Schema for Tool Output ---
 
@@ -34,21 +47,51 @@ class RunShellOutput(BaseModel):
     stderr: str = Field(description="The standard error of the command.")
     command_executed: str = Field(description="The command that was executed.")
 
+class PTYTask(BaseModel):
+    """Represents a handle to a task running in a PTY."""
+    task_id: UUID = Field(description="The unique ID of the PTY task.")
+    type: str = Field(default="pty_task", description="The type of the output.")
+
 # --- Tool Implementation ---
 
 @tool(args_schema=RunShellInput)
-async def run_shell(command: str, working_directory_relative_to_repo: Optional[str] = None, stdin: Optional[str] = None) -> RunShellOutput:
+async def run_shell(
+    command: str, 
+    working_directory_relative_to_repo: Optional[str] = None, 
+    stdin: Optional[str] = None, 
+    pty: bool = False, 
+    task_name: Optional[str] = None,
+    # This is not part of the tool's schema, but is passed from the executor
+    state: Optional[AgentState] = None,
+) -> Union[RunShellOutput, PTYTask]:
     """
     Executes a shell command in the repository workspace.
     Returns a dictionary with stdout, stderr, and the return code.
     """
-    logger.info(f"Tool: run_shell called with command: '{command}' in dir: '{working_directory_relative_to_repo}'")
+    logger.info(f"Tool: run_shell called with command: '{command}' in dir: '{working_directory_relative_to_repo}' pty={pty}")
+    settings = get_settings()
+    repo_dir = Path(settings.REPO_DIR)
+    absolute_cwd = str(repo_dir)
+    if working_directory_relative_to_repo:
+        absolute_cwd = str(repo_dir / working_directory_relative_to_repo)
+
+    if pty:
+        if not state or not state.get("pty_callbacks"): 
+            raise ValueError("PTY mode requires callbacks in agent state, but none were found.")
+        
+        pty_manager = get_pty_manager()
+        pty_callbacks = state["pty_callbacks"]
+
+        task_id = await pty_manager.spawn(
+            command=shlex.split(command),
+            cwd=absolute_cwd,
+            on_output=pty_callbacks["on_output"],
+            on_complete=pty_callbacks["on_complete"],
+        )
+        return PTYTask(task_id=task_id)
+
+    # --- Legacy MCP-based execution for non-PTY calls ---
     try:
-        settings = get_settings()
-        repo_dir = Path(settings.REPO_DIR) # Ensure repo_dir is a Path object
-        absolute_cwd = str(repo_dir)
-        if working_directory_relative_to_repo:
-            absolute_cwd = str(repo_dir / working_directory_relative_to_repo)
         mcp_args = {"command": command, "cwd": absolute_cwd}
         if stdin is not None:
             mcp_args["stdin"] = stdin
