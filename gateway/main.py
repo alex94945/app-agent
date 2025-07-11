@@ -160,18 +160,34 @@ async def agent_websocket(websocket: WebSocket):
                             ToolResultMessage(d={"tool_name": event['name'], "result": output}).model_dump_json()
                         )
                     
+                    elif kind == "on_chat_model_stream":
+                        content = event['data']['chunk'].content
+                        if content:
+                            await websocket.send_text(
+                                TokenMessage(d=content).model_dump_json()
+                            )
+
                     elif kind == "on_graph_end":
                         logger.info("Graph End")
                         final_state = event['data'].get('output')
-                        last_message = final_state['messages'][-1]
-                        if isinstance(last_message, AIMessage):
-                            await websocket.send_text(
-                                FinalMessage(d=last_message.content).model_dump_json()
-                            )
+                        if final_state and final_state.get('messages'):
+                            last_message = final_state['messages'][-1]
+                            if isinstance(last_message, AIMessage) and last_message.content:
+                                await websocket.send_text(
+                                    FinalMessage(d=last_message.content).model_dump_json()
+                                )
+                    else:
+                        # For other events, we can just pass as they are not critical for the UI
+                        pass
 
             except json.JSONDecodeError:
                 logger.error(f"Failed to decode incoming JSON: {raw_data}")
-                await websocket.send_text(ErrorMessage(d="Invalid JSON format.").model_dump_json())
+                try:
+                    serializable_data = json.dumps({"t": "error", "d": "Invalid JSON format."})
+                except TypeError:
+                    logger.warning(f"Could not serialize event data for event type error. Skipping.")
+                    continue
+                await websocket.send_text(serializable_data)
 
     except WebSocketDisconnect:
         logger.info("WebSocket connection closed.")

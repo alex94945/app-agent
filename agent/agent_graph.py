@@ -190,7 +190,7 @@ def planner_arg_step(state: AgentState) -> dict:
 
 # --- Executor Node ---
 
-def tool_executor_step(state: AgentState) -> dict:
+async def tool_executor_step(state: AgentState) -> dict:
     """Executes the chosen tool with the provided arguments and returns the output."""
     all_tools_list = [
         read_file,
@@ -220,7 +220,7 @@ def tool_executor_step(state: AgentState) -> dict:
     try:
         # Note: Not all tools may be async, but we run them in a thread pool
         # to avoid blocking the main event loop.
-        output = tool.invoke(tool_args)
+        output = await tool.ainvoke(tool_args)
     except Exception as e:
         error_message = f"Error executing tool {tool_name}: {e}"
         logger.error(error_message, exc_info=True)
@@ -298,12 +298,9 @@ def compile_agent_graph(
     elif checkpointer:
         cp = checkpointer  # caller supplied a saver instance
 
-    # Default interruption behavior for production
-    if interrupt_before is None:
-        interrupt_before = ["tool_executor"]
-
     return graph.compile(
         checkpointer=cp,
+        # No default interruption
         interrupt_before=interrupt_before,
     )
 

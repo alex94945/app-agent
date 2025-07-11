@@ -2,24 +2,45 @@
 
 ## Running the Application
 
-To run the application, you will need two terminal windows.
+Follow these steps to get the application running locally.
 
-**1. Start the Backend Gateway:**
+### Prerequisites
 
-```bash
-uvicorn gateway.main:app --host 0.0.0.0 --port 8001 --reload
-```
+1.  **Install Python dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+2.  **Install Node.js dependencies:**
+    ```bash
+    cd ui
+    npm install
+    cd ..
+    ```
 
-**2. Start the Frontend UI:**
+### Starting the Services
 
-In a separate terminal, navigate to the `ui` directory and run:
+To run the application, you will need to open three separate terminal windows to run the following services concurrently:
 
-```bash
-cd ui
-npm run dev
-```
+1.  **MCP Tool Server** (provides tools for file I/O, shell commands, etc.)
+    ```bash
+    python tool_server.py
+    ```
+    *Listens on `http://127.0.0.1:8080` by default.*
 
-The UI will be available at [http://localhost:8000](http://localhost:8000).
+2.  **Backend Gateway** (main application server)
+    ```bash
+    uvicorn gateway.main:app --host 0.0.0.0 --port 8001 --reload
+    ```
+    *Listens on `http://localhost:8001` by default.*
+
+3.  **Frontend UI** (Next.js development server)
+    ```bash
+    cd ui
+    npm run dev
+    ```
+    *Runs on `http://localhost:8000`.*
+
+Once all services are running, you can access the application at [http://localhost:8000](http://localhost:8000).
 
 App-Agent is an agent-centric, LLM-powered codebase designed for automated code modification, diagnostics, and self-healing workflows. It leverages the MCP (Machine Control Protocol) ecosystem, FastMCP in-memory servers for robust tool testing, and a modular agent architecture to support advanced developer-assist and code-repair scenarios.
 
