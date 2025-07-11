@@ -91,8 +91,9 @@ async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_serv
     import time
     try:
         thread_id = f"live-e2e-test-{os.getpid()}"
-        initial_prompt = f"{INITIAL_SCAFFOLD_PROMPT}\n\nHere is the user's request:\n\n{prompt}"
-        initial_state = {"messages": [HumanMessage(content=initial_prompt)]}
+        # The agent graph now handles the initial prompt logic based on iteration count.
+        # We just need to pass the user's raw request.
+        initial_state = {"messages": [HumanMessage(content=prompt)]}
         config = {"configurable": {"thread_id": thread_id}}
 
         logger.info(f"[E2E] Current working directory: {os.getcwd()}")

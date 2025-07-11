@@ -61,10 +61,6 @@ class ToolPicker(BaseModel):
     summary: str = Field(
         description="A brief summary of your reasoning for choosing this tool, or a summary of why the task is complete."
     )
-    project_subdirectory: Optional[str] = Field(
-        default=None,
-        description="If creating a new project, the URL-friendly slug for the project subdirectory (e.g., 'my-cool-app')."
-    )
 
 def planner_reason_step(state: AgentState) -> dict:
     """First planner step: LLM call without tool schemas to decide which tool to use."""
@@ -83,7 +79,12 @@ def planner_reason_step(state: AgentState) -> dict:
     llm = get_llm_client().with_structured_output(ToolPicker)
     
     tool_names = [tool.name for tool in all_tools_list]
-    system_prompt = PLANNER_SYSTEM_PROMPT.format(tool_names=tool_names)
+
+    # On the first turn, use the special scaffolding prompt. Otherwise, use the general planner prompt.
+    if state.get("iteration_count", 0) == 0:
+        system_prompt = INITIAL_SCAFFOLD_PROMPT
+    else:
+        system_prompt = PLANNER_SYSTEM_PROMPT.format(tool_names=tool_names)
 
     prompt_messages = [SystemMessage(content=system_prompt)] + messages
 
@@ -102,11 +103,7 @@ def planner_reason_step(state: AgentState) -> dict:
         update_dict["next_tool_to_call"] = response.tool_name
         update_dict["messages"] = [AIMessage(content=f"Reasoning: {response.summary}")]
     
-    # If the LLM sets the project subdirectory, add it to the state update.
-    # Only do this if the state doesn't already have one.
-    if response.project_subdirectory and not state.get("project_subdirectory"):
-        logger.info(f"Planner set project_subdirectory to: {response.project_subdirectory}")
-        update_dict["project_subdirectory"] = response.project_subdirectory
+
 
     # increment iteration count so MAX_ITERATIONS can trigger even when no tool executes
     update_dict["iteration_count"] = state.get("iteration_count", 0) + 1
@@ -311,8 +308,11 @@ agent_graph = compile_agent_graph()
 async def run_agent(question: str, project_subdirectory: str):
     """Run the agent with a given question and project subdirectory."""
     config = {"configurable": {"thread_id": "test-thread"}}
+    # The user's question is the first message.
+    initial_messages = [HumanMessage(content=question)]
+
     initial_state = AgentState(
-        messages=[HumanMessage(content=INITIAL_SCAFFOLD_PROMPT.format(question=question))],
+        messages=initial_messages,
         iteration_count=0,
         project_subdirectory=project_subdirectory,
         next_tool_to_call=None,
