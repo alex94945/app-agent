@@ -11,13 +11,31 @@ from langgraph.pregel import Pregel
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage, ToolMessage
-from langchain_core.pydantic_v1 import BaseModel, Field
+from langchain_core.pydantic_v1 import BaseModel, Field, create_model
+from typing import Type
+
+# Helper to map schema types to Python types
+_TYPE_MAP = {
+    'string': str,
+    'number': float,
+    'integer': int,
+    'boolean': bool,
+    'object': dict,
+    'array': list,
+}
+
+def get_type_from_schema(schema_dict: dict) -> Type:
+    """Gets the Python type from a JSON-like schema dictionary."""
+    return _TYPE_MAP.get(schema_dict.get('type', 'string'), str)
 
 from agent.prompts.initial_scaffold import INITIAL_SCAFFOLD_PROMPT
+from agent.prompts.arg_generator_system_prompt import get_arg_generator_system_prompt
+from agent.prompts.planner_system_prompt import PLANNER_SYSTEM_PROMPT
 from agent.state import AgentState
 from common.llm import get_llm_client
-from agent.executor.runner import run_single_tool, ToolExecutionError
+from agent.executor.runner import run_single_tool
 from agent.executor.output_handlers import format_tool_output
+
 
 # Import all tools
 from tools.file_io_mcp_tools import read_file, write_file
@@ -31,19 +49,6 @@ logger = logging.getLogger(__name__)
 
 MAX_ITERATIONS = 15
 
-# List of all tools for the planner LLM to know about
-all_tools_list = [
-    read_file,
-    write_file,
-    run_shell,
-    apply_patch,
-    vector_search,
-    lsp_definition,
-    lsp_hover,
-    get_diagnostics,
-    diagnose,
-]
-tool_map = {tool.name: tool for tool in all_tools_list}
 
 # --- Planner Nodes (Two-Step: Reason -> Act) ---
 
@@ -63,22 +68,22 @@ class ToolPicker(BaseModel):
 
 def planner_reason_step(state: AgentState) -> dict:
     """First planner step: LLM call without tool schemas to decide which tool to use."""
+    all_tools_list = [
+        read_file,
+        write_file,
+        run_shell,
+        apply_patch,
+        vector_search,
+        lsp_definition,
+        lsp_hover,
+        get_diagnostics,
+        diagnose,
+    ]
     messages = state['messages']
     llm = get_llm_client().with_structured_output(ToolPicker)
     
-    system_prompt = f"""You are an expert software development agent.
-
-Your task is to choose the best tool for the job to solve the user's request. The user's request is in the first message.
-
-If this is the first step in creating a new project, you MUST decide on a descriptive, URL-friendly slug for the project (e.g., "my-cool-app") and set the `project_subdirectory` field.
-
-Review the conversation history and the output of previous tools. 
-
-If the user's request is not yet complete, choose the next tool to use. The available tools are: {[tool.name for tool in all_tools_list]}.
-
-If the user's request has been fully satisfied, DO NOT select a tool. Instead, provide a summary of the work completed.
-
-Please respond with your decision."""
+    tool_names = [tool.name for tool in all_tools_list]
+    system_prompt = PLANNER_SYSTEM_PROMPT.format(tool_names=tool_names)
 
     prompt_messages = [SystemMessage(content=system_prompt)] + messages
 
@@ -109,12 +114,26 @@ Please respond with your decision."""
 
 def planner_arg_step(state: AgentState) -> dict:
     """This step generates the arguments for the tool chosen in the reason step."""
+    all_tools_list = [
+        read_file,
+        write_file,
+        run_shell,
+        apply_patch,
+        vector_search,
+        lsp_definition,
+        lsp_hover,
+        get_diagnostics,
+        diagnose,
+    ]
     tool_name = state.get("next_tool_to_call")
     if not tool_name:
         # The planner has decided the task is complete.
         # We pass through the AIMessage from the previous step.
         logger.info("Arg step is skipping: task is complete.")
         return {}
+
+    # Initialize the tool map inside the function to avoid serialization issues
+    tool_map = {tool.name: tool for tool in all_tools_list}
 
     # Get the specific tool schema
     try:
@@ -128,16 +147,22 @@ def planner_arg_step(state: AgentState) -> dict:
         # TODO: Create a robust error handling mechanism for bad tool names.
         return {"messages": [ToolMessage(content=error_message, tool_call_id="invalid_tool_name")]}
 
-    # Get the LLM with the specific tool schema
-    llm_with_tool = get_llm_client().with_structured_output(tool.args_schema)
+    # Dynamically create a Pydantic model for the tool's arguments
+    # The tool.args is a dict where the value is another dict (a JSON-like schema)
+    fields = {
+        k: (get_type_from_schema(v), v.get('default'))
+        for k, v in tool.args.items()
+    }
+    ToolArguments = create_model(f'{tool_name}Args', **fields)
 
-    system_prompt = f"""You are an expert software development agent.
+    # Get the LLM with the dynamically created tool schema
+    llm_with_tool = get_llm_client().with_structured_output(ToolArguments)
 
-Your task is to generate the arguments for the tool: '{tool_name}'.
-
-Review the conversation history and the user's request to determine the correct arguments.
-
-Only respond with the arguments, nothing else."""
+    system_prompt = get_arg_generator_system_prompt(
+        tool_name=tool_name,
+        tool_description=tool.description,
+        tool_args=tool.args
+    )
 
     prompt_messages = [SystemMessage(content=system_prompt)] + state['messages']
 
@@ -146,7 +171,7 @@ Only respond with the arguments, nothing else."""
     logger.info(f"Arg step response: {response_args}")
 
     # The response_args is a Pydantic model. We need to convert it to a dict.
-    args_dict = response_args.dict()
+    args_dict = response_args.dict() if hasattr(response_args, 'dict') else response_args.model_dump()
 
     # LangChain expects tool calls to be in a specific format.
     tool_call = {
@@ -155,29 +180,62 @@ Only respond with the arguments, nothing else."""
         "id": str(uuid4()),
     }
 
-    return {"messages": [AIMessage(content="", tool_calls=[tool_call])]}
+    # The state should be updated by appending the new tool call to the existing messages.
+    # The reasoning message is already the last message in the list.
+    # Clear the next_tool_to_call so we don't loop.
+    return {
+        "messages": [AIMessage(content="", tool_calls=[tool_call])],
+        "next_tool_to_call": None
+    }
 
 # --- Executor Node ---
 
-async def tool_executor_step(state: AgentState) -> dict:
-    """Executes the tool call generated by the planner."""
-    last_message = state['messages'][-1]
-    if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
-        return {}
+def tool_executor_step(state: AgentState) -> dict:
+    """Executes the chosen tool with the provided arguments and returns the output."""
+    all_tools_list = [
+        read_file,
+        write_file,
+        run_shell,
+        apply_patch,
+        vector_search,
+        lsp_definition,
+        lsp_hover,
+        get_diagnostics,
+        diagnose,
+    ]
+    tool_call = state['messages'][-1].tool_calls[0]
+    tool_name = tool_call['name']
+    tool_args = tool_call['args']
 
-    tool_call = last_message.tool_calls[0]
-    
+    # Initialize the tool map inside the function to avoid serialization issues
+    tool_map = {tool.name: tool for tool in all_tools_list}
+
+    # Find the tool in the registry
+    tool = tool_map.get(tool_name)
+    if not tool:
+        error_message = f"Error: Tool '{tool_name}' not found."
+        return {"messages": [ToolMessage(content=error_message, tool_call_id=tool_call['id'])]}
+
+    # Execute the tool and get the output
     try:
-        output = await run_single_tool(tool_call['name'], tool_call['args'], state)
-        output_content = format_tool_output(output)
-        tool_message = ToolMessage(content=output_content, tool_call_id=tool_call['id'])
-    except ToolExecutionError as e:
-        logger.error(f"Tool execution failed: {e}")
-        tool_message = ToolMessage(content=f"Error: {e}", tool_call_id=tool_call['id'])
+        # Note: Not all tools may be async, but we run them in a thread pool
+        # to avoid blocking the main event loop.
+        output = tool.invoke(tool_args)
+    except Exception as e:
+        error_message = f"Error executing tool {tool_name}: {e}"
+        logger.error(error_message, exc_info=True)
+        return {"messages": [ToolMessage(content=error_message, tool_call_id=tool_call['id'])]}
+
+    # Format the output for the LLM
+    output_content = format_tool_output(output)
 
     return {
-        "messages": [tool_message],
-        "iteration_count": state.get("iteration_count", 0) + 1,
+        "messages": [
+            ToolMessage(
+                content=output_content,
+                tool_call_id=tool_call['id'],
+            )
+        ]
     }
 
 # --- Control Flow and Graph Definition ---

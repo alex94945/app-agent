@@ -78,10 +78,6 @@ async def agent_websocket(websocket: WebSocket):
     Handles the WebSocket connection for the agent.
     Accepts user prompts and streams back agent events and PTY logs.
     """
-    """
-    Handles the WebSocket connection for the agent.
-    Accepts user prompts and streams back agent responses.
-    """
     await websocket.accept()
     logger.info("WebSocket connection accepted.")
     try:
@@ -141,8 +137,7 @@ async def agent_websocket(websocket: WebSocket):
 
                 config = {"configurable": {"thread_id": thread_id}}
                 initial_state = AgentState(
-                    messages=[HumanMessage(content=prompt)],
-                    pty_callbacks=pty_callbacks
+                    messages=[HumanMessage(content=prompt)]
                 )
 
                 # --- Stream Agent Events --- #
@@ -162,16 +157,17 @@ async def agent_websocket(websocket: WebSocket):
                         if isinstance(output, dict) and output.get("type") == "pty_task":
                             continue
                         await websocket.send_text(
-                            ToolResultMessage(d={"name": event['name'], "result": output}).model_dump_json()
+                            ToolResultMessage(d={"tool_name": event['name'], "result": output}).model_dump_json()
                         )
-
-                # After the stream is finished, get the final state
-                final_state = await agent_graph.aget_state(config)
-                last_message = final_state.values[-1]['messages'][-1]
-                if isinstance(last_message, AIMessage):
-                    await websocket.send_text(
-                        FinalMessage(d=last_message.content).model_dump_json()
-                    )
+                    
+                    elif kind == "on_graph_end":
+                        logger.info("Graph End")
+                        final_state = event['data'].get('output')
+                        last_message = final_state['messages'][-1]
+                        if isinstance(last_message, AIMessage):
+                            await websocket.send_text(
+                                FinalMessage(d=last_message.content).model_dump_json()
+                            )
 
             except json.JSONDecodeError:
                 logger.error(f"Failed to decode incoming JSON: {raw_data}")

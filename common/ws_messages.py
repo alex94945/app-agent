@@ -1,6 +1,6 @@
 # common/ws_messages.py
 
-from typing import Dict, Any, Literal
+from typing import Dict, Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 # Base model for all WebSocket messages to ensure they have a type field 't'

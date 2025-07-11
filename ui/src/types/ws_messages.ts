@@ -1,19 +1,9 @@
-// ui/src/types/ws_messages.ts
-
-// Base interface for all WebSocket messages
-export interface WsMessageBase {
-  t: string; // The type of the message
-  d: any;    // The data payload
-}
-
-// Specific message types for different events
-
-export interface TokenMessage extends WsMessageBase {
+export interface TokenMessage {
   t: 'tok';
-  d: string; // A piece of a streamed LLM response
+  d: string;
 }
 
-export interface ToolCallMessage extends WsMessageBase {
+export interface ToolCallMessage {
   t: 'tool_call';
   d: {
     name: string;
@@ -21,7 +11,7 @@ export interface ToolCallMessage extends WsMessageBase {
   };
 }
 
-export interface ToolResultMessage extends WsMessageBase {
+export interface ToolResultMessage {
   t: 'tool_result';
   d: {
     tool_name: string;
@@ -29,20 +19,59 @@ export interface ToolResultMessage extends WsMessageBase {
   };
 }
 
-export interface FinalMessage extends WsMessageBase {
+export interface FinalMessage {
   t: 'final';
-  d: string; // The final agent response
+  d: string;
 }
 
-export interface ErrorMessage extends WsMessageBase {
+export interface ErrorMessage {
   t: 'error';
-  d: string; // The error message
+  d: string;
 }
 
-// A type union for all possible incoming messages
-export type WsMessage =
-  | TokenMessage
-  | ToolCallMessage
-  | ToolResultMessage
-  | FinalMessage
-  | ErrorMessage;
+// PTY Task Streaming Messages
+
+export interface TaskStartedData {
+  task_id: string; // UUID is a string in TS
+  name: string;
+  started_at: string; // ISO 8601 datetime string
+}
+
+export interface TaskStartedMessage {
+  t: 'task_started';
+  d: TaskStartedData;
+}
+
+export interface TaskLogData {
+  task_id: string;
+  chunk: string;
+}
+
+export interface TaskLogMessage {
+  t: 'task_log';
+  d: TaskLogData;
+}
+
+export interface TaskFinishedData {
+  task_id: string;
+  state: 'success' | 'error' | 'timeout';
+  exit_code: number | null;
+  duration_ms: number;
+}
+
+export interface TaskFinishedMessage {
+  t: 'task_finished';
+  d: TaskFinishedData;
+}
+
+// Union type for all possible incoming WebSocket messages
+export type WsMessage = 
+  | TokenMessage 
+  | ToolCallMessage 
+  | ToolResultMessage 
+  | FinalMessage 
+  | ErrorMessage
+  | TaskStartedMessage
+  | TaskLogMessage
+  | TaskFinishedMessage;
+

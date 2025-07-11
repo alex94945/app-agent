@@ -17,11 +17,6 @@ logger = logging.getLogger(__name__)
 class ReadFileInput(BaseModel):
     path_in_repo: str = Field(description="The path to the file within the repository to read.")
 
-class WriteFileOutput(BaseModel):
-    ok: bool = Field(description="True if the file was written successfully, False otherwise.")
-    path: str = Field(description="The path to the file that was written or attempted.")
-    message: str = Field(description="A message indicating success or failure.")
-
 class WriteFileInput(BaseModel):
     path_in_repo: str = Field(description="The path to the file within the repository to write.")
     content: str = Field(description="The content to write to the file.")
@@ -73,7 +68,7 @@ async def read_file(path_in_repo: str) -> str:
         return error_message
 
 @tool(args_schema=WriteFileInput)
-async def write_file(path_in_repo: str, content: str) -> WriteFileOutput:
+async def write_file(path_in_repo: str, content: str) -> str:
     """
     Writes content to a file in the repository workspace, overwriting it if it exists.
     The path should be relative to the repository root.
@@ -87,22 +82,14 @@ async def write_file(path_in_repo: str, content: str) -> WriteFileOutput:
                                     {"path": str(absolute_path_to_write), "content": content})
             success_message = f"Successfully wrote {len(content)} bytes to '{path_in_repo}'."
             logger.info(success_message)
-            return WriteFileOutput(ok=True, path=path_in_repo, message=success_message)
+            return success_message
     except ToolError as e:
         # FastMCP client wraps server-side McpError in a ToolError.
         # We format this to match the expected test assertion.
         logger.error(f"MCP ToolError writing file '{path_in_repo}': {e}")
-        return WriteFileOutput(
-            ok=False,
-            path=path_in_repo,
-            message=f"MCP Error writing file '{path_in_repo}': {e}",
-        )
+        return f"MCP Error writing file '{path_in_repo}': {e}"
     except Exception as e:
         # Catch any other unexpected errors.
         error_message = f"Unexpected error in write_file tool for '{path_in_repo}': {e}"
         logger.error(error_message, exc_info=True)
-        return WriteFileOutput(
-            ok=False,
-            path=path_in_repo,
-            message=error_message,
-        )
+        return error_message

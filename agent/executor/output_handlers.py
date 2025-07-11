@@ -5,7 +5,7 @@ from pydantic import BaseModel
 # Importing actual Pydantic models from their respective tool definition files.
 
 from tools.shell_mcp_tools import RunShellOutput
-from tools.file_io_mcp_tools import WriteFileOutput
+
 from tools.patch_tools import ApplyPatchOutput
 
 # --- Output Handler Protocol & Implementations ---
@@ -65,16 +65,6 @@ class RunShellOutputHandler(OutputHandler):
             return f"Command '{output.command_executed}' failed with return code {output.return_code}.{stderr_msg}{stdout_msg}"
 
 
-class WriteFileOutputHandler(OutputHandler):
-    def is_successful(self, output: WriteFileOutput) -> bool:
-        # The WriteFileOutput model uses 'ok: bool'.
-        return output.ok
-
-    def format_output(self, output: WriteFileOutput) -> str:
-        # The message field already contains a descriptive success/failure message.
-        return output.message
-
-
 class ApplyPatchOutputHandler(OutputHandler):
     def is_successful(self, output: ApplyPatchOutput) -> bool:
         # The ApplyPatchOutput model uses 'ok: bool'.
@@ -89,7 +79,6 @@ class ApplyPatchOutputHandler(OutputHandler):
 
 OUTPUT_HANDLERS: dict[Type, OutputHandler] = {
     RunShellOutput: RunShellOutputHandler(),
-    WriteFileOutput: WriteFileOutputHandler(),
     ApplyPatchOutput: ApplyPatchOutputHandler(),
     # Add more handlers here as new tool output types are introduced
 }

@@ -328,3 +328,4 @@
 
 **Future-proofing Note:**
 > To ensure reliable imports for all contributors and CI, plan to migrate the codebase to a `src/` layout (placing all source code in a `src/` directory) or support editable installs (`pip install -e .`). This will eliminate the need for contributors to set `PYTHONPATH` manually and is considered best practice for modern Python projects.
+> Look into reducing 429 errors by trimming token costs.
