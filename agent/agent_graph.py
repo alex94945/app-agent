@@ -34,13 +34,13 @@ from agent.prompts.arg_generator_system_prompt import get_arg_generator_system_p
 from agent.prompts.planner_system_prompt import PLANNER_SYSTEM_PROMPT
 from agent.state import AgentState
 from common.llm import get_llm_client
-from agent.executor.runner import run_single_tool
+
 from agent.executor.output_handlers import format_tool_output
 
 
 # Import all tools
 from tools.file_io_mcp_tools import read_file, write_file
-from tools.scaffold_tool import scaffold_project, ScaffoldProjectOutput
+
 from tools.shell_mcp_tools import run_shell
 from tools.patch_tools import apply_patch
 from tools.vector_store_tools import vector_search
@@ -161,25 +161,9 @@ async def tool_executor_step(state: AgentState) -> dict:
     # Format the output for the LLM
     output_content = format_tool_output(output)
 
-    if isinstance(output, ScaffoldProjectOutput):
-        return {
-            "messages": [
-                ToolMessage(
-                    content=output_content,
-                    tool_call_id=tool_call['id'],
-                )
-            ],
-            "project_subdirectory": output.project_subdirectory,
-        }
-    else:
-        return {
-            "messages": [
-                ToolMessage(
-                    content=output_content,
-                    tool_call_id=tool_call['id'],
-                )
-            ]
-        }
+    return {
+        "messages": [ToolMessage(content=output_content, tool_call_id=tool_call['id'])]
+    }
 
 # --- Control Flow and Graph Definition ---
 
@@ -191,24 +175,18 @@ def after_reasoner_router(state: AgentState) -> str:
     logger.info("Reasoner did not choose a tool. Ending.")
     return END
 
-def after_executor_router(state: AgentState) -> str:
-    """After executing a tool, decide whether to continue or end."""
-    if state.get('iteration_count', 0) >= MAX_ITERATIONS:
-        logger.warning("Max iterations reached. Ending.")
-        return END
-    return "planner_reasoner"
 
 def build_state_graph() -> StateGraph:
     """Builds the LangGraph StateGraph for the autonomous agent, without compiling it."""
     workflow = StateGraph(AgentState)
 
-    # Add nodes
-    workflow.add_node("planner_reasoner", RunnableLambda(planner_reason_step))
-    workflow.add_node("planner_arg_generator", RunnableLambda(planner_arg_step))
-    workflow.add_node("tool_executor", RunnableLambda(tool_executor_step))
-
-    # Define edges
+    # Add nodes and define edges
     workflow.set_entry_point("planner_reasoner")
+    workflow.add_node("planner_reasoner", planner_reason_step)
+    workflow.add_node("planner_arg_generator", planner_arg_step)
+    workflow.add_node("tool_executor", tool_executor_step)
+
+    # Edges from the main reasoner
     workflow.add_conditional_edges(
         "planner_reasoner",
         after_reasoner_router,

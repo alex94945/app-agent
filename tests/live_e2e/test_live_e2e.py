@@ -58,7 +58,7 @@ def live_e2e_repo_dir(tmp_path: Path) -> Path:
 @pytest.mark.e2e_live
 @pytest.mark.timeout(1200)
 @pytest.mark.asyncio
-async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_client: Client, request, monkeypatch):
+async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_client, request, monkeypatch):
     app_slug = slugify(prompt)
     """
     Tests the full, unmocked agent pipeline on a simple scaffolding and
@@ -70,7 +70,6 @@ async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_clie
 
     save_app = request.config.getoption("--save-app")
     if save_app:
-        from pathlib import Path
         live_e2e_repo_dir = Path.cwd()
 
     # Ensure all shell.run cwd paths resolve under this repo directory
@@ -78,6 +77,15 @@ async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_clie
     if workspace_path.exists():
         shutil.rmtree(workspace_path) # Redundant given tmp_path, but safe
     workspace_path.mkdir()
+
+    # --- Pre-scaffold the project ---
+    template_dir = Path(__file__).parent.parent.parent / "templates" / "nextjs-base"
+    if not template_dir.is_dir():
+        pytest.fail(f"Base template not found at {template_dir}. Please run 'npx create-next-app' to create it.")
+    
+    project_path = workspace_path / app_slug
+    shutil.copytree(template_dir, project_path)
+    logger.info(f"Copied base template to {project_path}")
 
     # Configure the settings to use our temporary workspace
     from common import config
@@ -96,14 +104,15 @@ async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_clie
 
     agent_graph = compile_agent_graph(interrupt_before=[])
 
-    app_slug = None
     final_state = None # Ensure final_state is defined
     import time
     try:
+        # The agent now starts with the project already existing.
         thread_id = f"live-e2e-test-{os.getpid()}"
-        # The agent graph now handles the initial prompt logic based on iteration count.
-        # We just need to pass the user's raw request.
-        initial_state = {"messages": [HumanMessage(content=prompt)]}
+        initial_state = {
+            "messages": [HumanMessage(content=prompt)],
+            "project_subdirectory": app_slug,
+        }
         config = {"configurable": {"thread_id": thread_id}}
 
         logger.info(f"[E2E] Current working directory: {os.getcwd()}")
@@ -119,49 +128,75 @@ async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_clie
             yield live_mcp_client
 
         # Forcefully patch the session opener in the tool modules
-        with patch('tools.shell_mcp_tools.open_mcp_session', new=mock_mcp_session_cm):
+        with patch('tools.shell_mcp_tools.open_mcp_session', new=mock_mcp_session_cm), \
+             patch('tools.file_io_mcp_tools.open_mcp_session', new=mock_mcp_session_cm):
             try:
                 final_state = await agent_graph.ainvoke(initial_state, config)
             finally:
                 t1 = time.time()
                 logger.info(f"Agent invocation elapsed time: {t1-t0:.2f} seconds")
-        logger.info("Agent invocation complete.")
+            
+            # --- Assertions ---
+            page_tsx_path = project_path / "src" / "app" / "page.tsx"
+
+            assert project_path.is_dir(), f"Project directory '{project_path}' was not created."
+            assert page_tsx_path.is_file(), f"page.tsx was not created at '{page_tsx_path}'."
+            logger.info("✅ Assertion Passed: Project directory and page.tsx exist.")
+                
+            # The page should contain some content and not be the default template.
+            page_content = page_tsx_path.read_text()
+            assert page_content.strip(), f"Page component '{page_tsx_path}' is empty."
+            assert "Welcome to Next.js!" not in page_content, "Agent did not modify the default page content."
+            logger.info("✅ Assertion Passed: Agent has modified the default page.tsx file.")
+
+            package_json_path = project_path / "package.json"
+            assert package_json_path.is_file(), "package.json was not created."
+            logger.info("✅ Assertion Passed: package.json exists.")
+            package_data = json.loads(package_json_path.read_text())
+            dependencies = package_data.get("dependencies", {})
+            assert "next" in dependencies, "'next' not found in package.json dependencies"
+            assert "react" in dependencies, "'react' not found in package.json dependencies"
+            logger.info("✅ Assertion Passed: package.json dependencies are correct.")
+
+            logger.info(f"Performing final verification by running 'npm run build' in {project_path}...")
+            # We need to import the original tool to call it for verification
+            from tools import shell_mcp_tools
+            build_result = await shell_mcp_tools.run_shell.ainvoke({
+                "command": "npm run build",
+                "working_directory_relative_to_repo": app_slug,
+            })
+
+            assert build_result.ok, f"Final verification failed. 'npm run build' did not pass.\nSTDOUT:\n{build_result.stdout}\nSTDERR:\n{build_result.stderr}"
+            logger.info("✅ Assertion Passed: `npm run build` completed successfully.")
+            logger.info(f"--- LIVE End-to-End Test for prompt '{prompt}' Passed Successfully! ---")
+            logger.info(f"Generated app output directory: {project_path}")
     
-        app_slug = final_state.get("project_subdirectory")
-        logger.info(f"[E2E] Agent output project_subdirectory: {app_slug}")
+        logger.info(f"Generated app output directory: {workspace_path / app_slug}")
     finally:
-        if app_slug:
-            logger.info(f"Generated app output directory: {workspace_path / app_slug}")
-        else:
-            logger.info(f"Generated app output directory: {workspace_path} (app_slug unknown)")
-        # This block now only handles logging and cleanup
-        log_contents = log_capture_string.getvalue()
-        if sys.exc_info()[0] or not app_slug: # Log on error or if slug not set
-            logger.error(f"--- Captured agent.agent_graph logs ---\n{log_contents}\n---------------------------------")
-            if final_state:
-                messages = final_state.get("messages", [])
-                logger.error(f"--- Message History on Failure ---\n{messages}\n---------------------------------")
-                # Explicitly log the final AI message content
-                if messages and hasattr(messages[-1], 'content'):
-                    logger.error(f"--- Final AI Message Content ---\n{messages[-1].content}\n---------------------------------")
+        if final_state:
+            messages = final_state.get("messages", [])
+            logger.error(f"--- Message History on Failure ---\n{messages}\n---------------------------------")
+            # Explicitly log the final AI message content
+            if messages and hasattr(messages[-1], 'content'):
+                logger.error(f"--- Final AI Message Content ---\n{messages[-1].content}\n---------------------------------")
         agent_logger.removeHandler(log_handler)
     
     # --- Assertions ---
-    assert app_slug, "Agent did not set project_subdirectory in its final state."
-    logger.info("--- Verifying Assertions ---")
-
-    project_path = workspace_path / app_slug
     page_tsx_path = project_path / "src" / "app" / "page.tsx"
 
     assert project_path.is_dir(), f"Project directory '{project_path}' was not created."
-    assert page_tsx_path.is_file(), f"Page component '{page_tsx_path}' was not created."
+    assert page_tsx_path.is_file(), f"page.tsx was not created at '{page_tsx_path}'."
     logger.info("✅ Assertion Passed: Project directory and page.tsx exist.")
-    
-    # Generic check: The page should contain some content.
-    assert page_tsx_path.read_text().strip(), f"Page component '{page_tsx_path}' is empty."
+        
+    # The page should contain some content and not be the default template.
+    page_content = page_tsx_path.read_text()
+    assert page_content.strip(), f"Page component '{page_tsx_path}' is empty."
+    assert "Welcome to Next.js!" not in page_content, "Agent did not modify the default page content."
+    logger.info("✅ Assertion Passed: Agent has modified the default page.tsx file.")
 
     package_json_path = project_path / "package.json"
     assert package_json_path.is_file(), "package.json was not created."
+    logger.info("✅ Assertion Passed: package.json exists.")
     package_data = json.loads(package_json_path.read_text())
     dependencies = package_data.get("dependencies", {})
     assert "next" in dependencies, "'next' not found in package.json dependencies"
