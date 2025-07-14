@@ -24,9 +24,12 @@ ignore_patterns = [
   "*.egg-info*",
   "*.dist-info*",
 
-  # big generated stuff
-  "node_modules/*",
-  "test_results/*",
+  # Node generated stuff
+  "ui/node_modules/*",
+  "*npm-debug.log*",
+  "*yarn-debug.log*",
+  "*yarn-error.log*",
+  "ui/.next/*",
 
   # E2E test outpu
   "workspace_dev/*",
@@ -34,6 +37,7 @@ ignore_patterns = [
   # keep unit tests but drop fixture payload
   "tests/test_fixtures/*",
   "tests/integration/fixtures/*",
+  "test_results/*",
 
-  "CLAUDE.md"
+  "CLAUDE.md",
 ]

@@ -8,9 +8,11 @@ from typing import Optional
 from uuid import uuid4
 from langgraph.graph import StateGraph, END
 from langgraph.pregel import Pregel
+from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage, ToolMessage
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.pydantic_v1 import BaseModel, Field, create_model
 from typing import Type
 
@@ -28,7 +30,7 @@ def get_type_from_schema(schema_dict: dict) -> Type:
     """Gets the Python type from a JSON-like schema dictionary."""
     return _TYPE_MAP.get(schema_dict.get('type', 'string'), str)
 
-from agent.prompts.initial_scaffold import INITIAL_SCAFFOLD_PROMPT
+from agent.prompts.initial_scaffold import get_initial_scaffold_prompt
 from agent.prompts.arg_generator_system_prompt import get_arg_generator_system_prompt
 from agent.prompts.planner_system_prompt import PLANNER_SYSTEM_PROMPT
 from agent.state import AgentState
@@ -44,6 +46,19 @@ from tools.patch_tools import apply_patch
 from tools.vector_store_tools import vector_search
 from tools.lsp_tools import lsp_definition, lsp_hover
 from tools.diagnostics_tools import get_diagnostics, diagnose
+
+# List of all tools used by the agent
+ALL_TOOLS_LIST = [
+    read_file,
+    write_file,
+    run_shell,
+    apply_patch,
+    vector_search,
+    lsp_definition,
+    lsp_hover,
+    get_diagnostics,
+    diagnose,
+]
 
 logger = logging.getLogger(__name__)
 
@@ -62,66 +77,25 @@ class ToolPicker(BaseModel):
         description="A brief summary of your reasoning for choosing this tool, or a summary of why the task is complete."
     )
 
-def planner_reason_step(state: AgentState) -> dict:
+def planner_reason_step(state: AgentState, llm: Optional[BaseChatModel] = None, system_prompt: Optional[str] = None) -> dict:
     """First planner step: LLM call without tool schemas to decide which tool to use."""
-    all_tools_list = [
-        read_file,
-        write_file,
-        run_shell,
-        apply_patch,
-        vector_search,
-        lsp_definition,
-        lsp_hover,
-        get_diagnostics,
-        diagnose,
-    ]
     messages = state['messages']
-    llm = get_llm_client().with_structured_output(ToolPicker)
-    
-    tool_names = [tool.name for tool in all_tools_list]
+    if llm is None:
+        llm = get_llm_client().with_structured_output(ToolPicker)
 
-    # On the first turn, use the special scaffolding prompt. Otherwise, use the general planner prompt.
-    if state.get("iteration_count", 0) == 0:
-        system_prompt = INITIAL_SCAFFOLD_PROMPT
-    else:
+    if system_prompt is None:
+        tool_names = [tool.name for tool in ALL_TOOLS_LIST]
         system_prompt = PLANNER_SYSTEM_PROMPT.format(tool_names=tool_names)
 
     prompt_messages = [SystemMessage(content=system_prompt)] + messages
 
     logger.info(f"Invoking reason step with messages: {prompt_messages}")
-    response = llm.invoke(prompt_messages)
-    logger.info(f"Reason step response: {response}")
-
-    update_dict = {}
-
-    # If the LLM decides the task is done, it will return a None tool_name.
-    if not response.tool_name:
-        logger.info("Planner decided task is complete.")
-        update_dict["next_tool_to_call"] = None
-        update_dict["messages"] = [AIMessage(content=f"Final summary: {response.summary}")]
-    else:
-        update_dict["next_tool_to_call"] = response.tool_name
-        update_dict["messages"] = [AIMessage(content=f"Reasoning: {response.summary}")]
-    
-
-
-    # increment iteration count so MAX_ITERATIONS can trigger even when no tool executes
-    update_dict["iteration_count"] = state.get("iteration_count", 0) + 1
-    return update_dict
+    result = llm.invoke(prompt_messages)
+    logger.info(f"Reason step result: {result}")
+    return {"tool_picker": result}
 
 def planner_arg_step(state: AgentState) -> dict:
     """This step generates the arguments for the tool chosen in the reason step."""
-    all_tools_list = [
-        read_file,
-        write_file,
-        run_shell,
-        apply_patch,
-        vector_search,
-        lsp_definition,
-        lsp_hover,
-        get_diagnostics,
-        diagnose,
-    ]
     tool_name = state.get("next_tool_to_call")
     if not tool_name:
         # The planner has decided the task is complete.
@@ -129,45 +103,20 @@ def planner_arg_step(state: AgentState) -> dict:
         logger.info("Arg step is skipping: task is complete.")
         return {}
 
-    # Initialize the tool map inside the function to avoid serialization issues
-    tool_map = {tool.name: tool for tool in all_tools_list}
+    tool = next((t for t in ALL_TOOLS_LIST if t.name == tool_name), None)
+    if tool is None:
+        logger.warning(f"Tool '{tool_name}' not found in available tools.")
+        return {}
 
-    # Get the specific tool schema
-    try:
-        tool = tool_map[tool_name]
-    except KeyError:
-        # This could happen if the LLM hallucinates a tool name.
-        # We'll add the error as a tool message and let the agent recover.
-        error_message = f"Tool '{tool_name}' not found. Please choose from the available tools."
-        # This message doesn't have a tool_call_id, which might be an issue.
-        # For now, we'll add it and see how LangGraph handles it.
-        # TODO: Create a robust error handling mechanism for bad tool names.
-        return {"messages": [ToolMessage(content=error_message, tool_call_id="invalid_tool_name")]}
+    # Prepare the prompt for argument generation
+    tool_args_schema = tool.args_schema.schema() if hasattr(tool, 'args_schema') else {}
+    system_prompt = get_arg_generator_system_prompt(tool_name, tool.description, tool_args_schema.get('properties', {}))
+    messages = state['messages']
+    llm = get_llm_client().with_structured_output(tool.args_schema)
+    prompt_messages = [SystemMessage(content=system_prompt)] + messages
 
-    # Dynamically create a Pydantic model for the tool's arguments
-    # The tool.args is a dict where the value is another dict (a JSON-like schema)
-    fields = {
-        k: (get_type_from_schema(v), v.get('default'))
-        for k, v in tool.args.items()
-    }
-    ToolArguments = create_model(f'{tool_name}Args', **fields)
-
-    # Get the LLM with the dynamically created tool schema
-    llm_with_tool = get_llm_client().with_structured_output(ToolArguments)
-
-    system_prompt = get_arg_generator_system_prompt(
-        tool_name=tool_name,
-        tool_description=tool.description,
-        tool_args=tool.args
-    )
-
-    prompt_messages = [SystemMessage(content=system_prompt)] + state['messages']
-
-    logger.info(f"Invoking arg step for tool {tool_name} with messages: {prompt_messages}")
-    response_args = llm_with_tool.invoke(prompt_messages)
-    logger.info(f"Arg step response: {response_args}")
-
-    # The response_args is a Pydantic model. We need to convert it to a dict.
+    logger.info(f"Invoking arg step for tool '{tool_name}' with messages: {prompt_messages}")
+    response_args = llm.invoke(prompt_messages)
     args_dict = response_args.dict() if hasattr(response_args, 'dict') else response_args.model_dump()
 
     # LangChain expects tool calls to be in a specific format.
@@ -189,35 +138,22 @@ def planner_arg_step(state: AgentState) -> dict:
 
 async def tool_executor_step(state: AgentState) -> dict:
     """Executes the chosen tool with the provided arguments and returns the output."""
-    all_tools_list = [
-        read_file,
-        write_file,
-        run_shell,
-        apply_patch,
-        vector_search,
-        lsp_definition,
-        lsp_hover,
-        get_diagnostics,
-        diagnose,
-    ]
     tool_call = state['messages'][-1].tool_calls[0]
     tool_name = tool_call['name']
     tool_args = tool_call['args']
 
-    # Initialize the tool map inside the function to avoid serialization issues
-    tool_map = {tool.name: tool for tool in all_tools_list}
-
-    # Find the tool in the registry
-    tool = tool_map.get(tool_name)
-    if not tool:
-        error_message = f"Error: Tool '{tool_name}' not found."
+    tool = next((t for t in ALL_TOOLS_LIST if t.name == tool_name), None)
+    if tool is None:
+        error_message = f"Tool '{tool_name}' not found."
         return {"messages": [ToolMessage(content=error_message, tool_call_id=tool_call['id'])]}
 
-    # Execute the tool and get the output
     try:
-        # Note: Not all tools may be async, but we run them in a thread pool
-        # to avoid blocking the main event loop.
-        output = await tool.ainvoke(tool_args)
+        # Tool execution may be async; run in a thread if not
+        if hasattr(tool, 'ainvoke'):
+            output = await tool.ainvoke(tool_args)
+        else:
+            # Run synchronous tools in a thread to avoid blocking the main event loop.
+            output = await asyncio.to_thread(tool.invoke, tool_args)
     except Exception as e:
         error_message = f"Error executing tool {tool_name}: {e}"
         logger.error(error_message, exc_info=True)
@@ -235,7 +171,49 @@ async def tool_executor_step(state: AgentState) -> dict:
         ]
     }
 
+# --- Executor Node ---
+
+async def set_project_subdirectory_step(state: AgentState) -> dict:
+    """Sets the project subdirectory based on the output of the first tool call."""
+    logger.info("Running set_project_subdirectory_step...")
+    last_message = state['messages'][-1]
+    if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
+        logger.warning("No tool calls found in the last message, skipping subdirectory update.")
+        return {}
+
+    tool_call = last_message.tool_calls[0]
+    if tool_call['name'] != 'shell.run':
+        logger.info(f"Tool call was not shell.run ({tool_call['name']}), skipping subdirectory update.")
+        return {}
+
+    command = tool_call['args'].get('command', '')
+    logger.info(f"Got shell.run command: {command}")
+
+    # Regex to find 'create-react-app <name>', 'npx create-next-app@latest <name>', etc.
+    # It looks for a command followed by a path-like argument.
+    match = re.search(r"(create-react-app|create-next-app(?:@latest)?|vue create|ng new|django-admin startproject|rails new)\s+([\w\-]+)", command)
+
+    if match:
+        project_subdirectory = match.group(2)
+        logger.info(f"Extracted project_subdirectory: {project_subdirectory}")
+        return {"project_subdirectory": project_subdirectory}
+    else:
+        logger.warning("Could not extract project_subdirectory from command.")
+        return {}
+
+
 # --- Control Flow and Graph Definition ---
+
+
+def should_scaffold(state: AgentState) -> dict:
+    """Determine whether to use the scaffolding prompt or the main planner."""
+    if state.get("project_subdirectory"):
+        logger.info("Project subdirectory is set, skipping scaffold prompt.")
+        return {"next_node": "planner_reasoner"}
+    else:
+        logger.info("Project subdirectory is not set, using scaffold prompt.")
+        return {"next_node": "scaffold_reasoner"}
+
 
 def after_reasoner_router(state: AgentState) -> str:
     """Routes after the reasoning step. If a tool is chosen, generate args. Otherwise, end."""
@@ -259,9 +237,40 @@ def build_state_graph() -> StateGraph:
     workflow.add_node("planner_reasoner", planner_reason_step)
     workflow.add_node("planner_arg_generator", planner_arg_step)
     workflow.add_node("tool_executor", tool_executor_step)
+    workflow.add_node("set_project_subdirectory", set_project_subdirectory_step)
+    # Add the missing should_scaffold node
+    workflow.add_node("should_scaffold", should_scaffold)
+
+    # A separate reasoner for the initial scaffolding, which uses a different system prompt.
+    scaffold_reasoner_runnable = (
+        RunnableLambda(planner_reason_step)
+        .with_config({"run_name": "scaffold_reasoner", "tags": ["scaffolding"]})
+        .bind(system_prompt=get_initial_scaffold_prompt())
+    )
+    workflow.add_node("scaffold_reasoner", scaffold_reasoner_runnable)
 
     # Define edges
-    workflow.set_entry_point("planner_reasoner")
+    workflow.set_entry_point("should_scaffold")
+    workflow.add_conditional_edges(
+        "should_scaffold",
+        lambda state: state["next_node"],
+        {
+            "scaffold_reasoner": "scaffold_reasoner",
+            "planner_reasoner": "planner_reasoner",
+        }
+    )
+
+    # Edges from the scaffold reasoner
+    workflow.add_conditional_edges(
+        "scaffold_reasoner",
+        after_reasoner_router,
+        {
+            "planner_arg_generator": "planner_arg_generator",
+            END: END
+        }
+    )
+
+    # Edges from the main reasoner
     workflow.add_conditional_edges(
         "planner_reasoner",
         after_reasoner_router,
@@ -270,15 +279,12 @@ def build_state_graph() -> StateGraph:
             END: END
         }
     )
+    
     workflow.add_edge("planner_arg_generator", "tool_executor")
-    workflow.add_conditional_edges(
-        "tool_executor",
-        after_executor_router,
-        {
-            "planner_reasoner": "planner_reasoner",
-            END: END
-        }
-    )
+
+    # After the first tool execution, set the subdirectory, then loop back to the main reasoner
+    workflow.add_edge("tool_executor", "set_project_subdirectory")
+    workflow.add_edge("set_project_subdirectory", "planner_reasoner")
     return workflow
 
 def compile_agent_graph(

@@ -1,18 +1,18 @@
 # System Architecture
 
-**Version:** 1.0
-**Date:** June 13, 2025
+**Version:** 2.0
+**Date:** July 17, 2024
 
 ## 1. Overview
 
-This document outlines the architecture of the Autonomous AI Web Application Co-Pilot. The system is designed as a modular, tool-using AI agent capable of understanding natural language prompts to scaffold, build, and iteratively develop web applications. The architecture is composed of several key components that work in concert to provide a seamless conversational development experience, from initial idea to a live, in-browser preview.
+This document outlines the architecture of the LLM-powered AI Agent, a system designed to convert natural language prompts into fully functional Next.js web applications. The system is architected as a modular, tool-using AI agent that interprets user requests, plans and executes development tasks, and iteratively refines the generated application through a conversational interface.
 
 The core principles guiding this architecture are:
 
-*   **Modularity:** Each component has a well-defined responsibility, allowing for independent development, testing, and enhancement.
-*   **Tool-Centric Design:** The agent's capabilities are extended through a collection of well-defined tools, making it easy to add new functionalities.
-*   **Clear Interfaces:** Communication between components relies on clear, schema-defined contracts, primarily over WebSockets.
-*   **Real-Time Feedback:** The system is designed to provide continuous, real-time feedback to the user, including the agent's thought process, actions, and a live preview of the application.
+*   **Agent-Centric Design:** A central planner LLM orchestrates the entire workflow, deciding which tools to use and when, rather than following a rigid, predefined graph.
+*   **Modularity:** Each component (Gateway, Agent, Tools, LSP/PTY Managers) has a well-defined responsibility, enabling independent development, testing, and enhancement.
+*   **Asynchronous & Stream-First:** The system is built with `asyncio` from the ground up. The FastAPI Gateway uses WebSockets to stream events—from LLM thoughts to PTY logs—in real-time to the UI, providing immediate user feedback.
+*   **Robust Tooling:** The agent's capabilities are defined by a "Toolbelt" of functions that interact with the development environment through stable protocols like MCP (for shell/file ops) and LSP (for code intelligence).
 
 ---
 
@@ -22,14 +22,23 @@ The core principles guiding this architecture are:
 graph TD
     subgraph "User's Browser"
         UI[Next.js UI]
-        Preview[Live Preview (WebContainer)]
     end
 
     subgraph "Backend Infrastructure (Python)"
         Gateway[FastAPI Gateway]
         Agent[LangGraph Agent]
+        subgraph "Agent Sub-systems"
+            Executor[Agent Executor]
+            LSP[LSP Manager]
+            PTY[PTY Manager]
+        end
         Tools[Toolbelt]
-        LSP[LSP Manager]
+    end
+
+    subgraph "External Services & Protocols"
+        LLM_API[LLM API e.g., OpenAI]
+        MCP_Server[MCP Tool Server]
+        LSP_Server[TS Language Server]
     end
 
     subgraph "Development Workspace"
@@ -37,109 +46,120 @@ graph TD
     end
 
     UI -- WebSocket --> Gateway
-    Gateway -- Invokes --> Agent
-    Agent -- Uses --> Tools
-    Tools -- Interact with --> Workspace
-    Tools -- Interact with --> LSP
-    Agent -- Streams updates --> Gateway
-    Gateway -- Streams updates --> UI
-    UI -- Updates --> Preview
+    Gateway -- Invokes & Streams --> Agent
+    Agent -- Plans & Reasons via --> LLM_API
+    Agent -- Executes via --> Executor
+    Executor -- Runs --> Tools
+
+    Tools -- fs/shell ops --> MCP_Server
+    Tools -- diagnostics/code intel --> LSP
+    LSP -- Manages --> LSP_Server
+
+    Tools -- long-running shell --> PTY
+    PTY -- Streams logs --> Gateway
+    Gateway -- Streams logs --> UI
+
+    MCP_Server -- Interacts with --> Workspace
+    LSP_Server -- Interacts with --> Workspace
 
     classDef component fill:#f9f,stroke:#333,stroke-width:2px;
-    class UI,Preview,Gateway,Agent,Tools,LSP,Workspace component;
+    class UI,Gateway,Agent,Executor,LSP,PTY,Tools,Workspace component;
 ```
 
 ---
 
 ## 3. Core Components
 
-### 3.1. Frontend (UI)
+### 3.1. Frontend (`ui/`)
 
-*   **Technology:** Next.js, TypeScript, React
+*   **Technology:** Next.js, TypeScript, React, Tailwind CSS.
 *   **Responsibilities:**
-    *   Provides the primary user interface, including a chat window for sending prompts to the agent.
-    *   Establishes and manages a WebSocket connection to the FastAPI Gateway.
-    *   Receives and displays a real-time stream of messages from the agent (e.g., thoughts, tool calls, results, errors).
-    *   Hosts the StackBlitz WebContainer iframe for the live preview.
-    *   Receives file system updates from the agent and forwards them to the WebContainer to keep the preview synchronized.
+    *   Provides the primary user interface, featuring a `ChatInterface` for prompts and a `MainPanel` for tabbed content.
+    *   Manages a single, persistent WebSocket connection to the `FastAPI Gateway`.
+    *   Receives and renders a real-time stream of events from the agent, including LLM tokens, tool calls, and PTY logs, using a defined message schema (`ui/src/types/ws_messages.ts`).
+    *   Features a `TerminalView` to display live output from long-running scaffolding and build commands.
+    *   (Future) Will host a live preview of the generated application.
 
-### 3.2. FastAPI Gateway
+### 3.2. FastAPI Gateway (`gateway/`)
 
-*   **Technology:** FastAPI, Python, WebSockets
+*   **Technology:** FastAPI, Uvicorn, WebSockets.
 *   **Responsibilities:**
-    *   Acts as the central communication hub between the frontend and the agent.
-    *   Manages WebSocket connections from clients.
-    *   Receives user prompts and initiates the LangGraph agent execution.
-    *   Streams events (LLM tokens, tool calls, etc.) from the running agent back to the UI using a defined message schema.
-    *   Provides a basic health check endpoint.
+    *   Acts as the primary entry point and communication hub between the frontend and the agent.
+    *   Manages the lifecycle of the application, including initializing the `REPO_DIR` workspace on startup.
+    *   Handles the `/api/agent` WebSocket endpoint, accepting user prompts and streaming all agent events back to the UI.
+    *   Receives PTY (pseudo-terminal) events from the `PTYManager` and relays them directly to the UI over the WebSocket.
+    *   Invokes the LangGraph agent using `astream_events` to get a full, granular stream of the agent's execution trace.
 
-### 3.3. LangGraph Agent
+### 3.3. LangGraph Agent (`agent/`)
 
-*   **Technology:** LangGraph, LangChain, Python
+*   **Technology:** LangGraph, LangChain.
 *   **Responsibilities:**
-    *   The "brain" of the system.
-    *   Maintains the state of the development task, including conversation history and tool results.
-    *   Interprets user prompts using a large language model (LLM) to form a plan.
-    *   Executes the plan by making decisions on which tool to use from the `Toolbelt`. This execution logic is increasingly handled by the `Agent Executor` submodule.
-    *   Processes the output from tools to inform its next steps.
-    *   Implements self-healing logic by interpreting diagnostics and build errors to attempt fixes.
+    *   The "brain" of the system, defined in `agent/agent_graph.py`. It orchestrates the entire task execution flow.
+    *   Maintains the conversational and operational state in a `TypedDict` (`agent/state.py`).
+    *   Implements a **two-step planner** pattern:
+        1.  **Reasoning Step (`planner_reason_step`):** A lightweight LLM call to decide *which* tool to use next, or to finish.
+        2.  **Argument Generation Step (`planner_arg_step`):** A second, focused LLM call to generate the JSON arguments for the chosen tool.
+    *   Uses conditional edges (`should_scaffold`, `after_reasoner_router`) to dynamically alter its path based on the current state.
+    *   The agent is designed to be stateless in its nodes; all state is managed explicitly in the `AgentState`.
 
-#### 3.3.1. Agent Executor (`agent/executor/`)
+### 3.4. Agent Executor (`agent/executor/`)
 
-This submodule is responsible for the robust execution of tool calls identified by the planner LLM. It enhances clarity, testability, and maintainability of the tool execution lifecycle.
+This submodule is responsible for the robust execution of tool calls identified by the planner. It decouples the agent's graph logic from the mechanics of tool invocation.
 
-*   **Key Files & Responsibilities:**
-    *   **`agent/executor/parser.py` & `agent/executor/utils.py`**: Contain utility functions for parsing tool calls from LLM messages (e.g., `parse_tool_calls`) and pre-processing tool arguments (e.g., `maybe_inject_subdir`).
-    *   **`agent/executor/fix_cycle.py`**: Defines the `FixCycleTracker` dataclass, which manages the state of repeated tool call attempts, especially in self-healing scenarios (e.g., tracking linting/patching attempts).
-    *   **`agent/executor/output_handlers.py`**: Implements a registry-based system (`OUTPUT_HANDLERS`) for determining the success of a tool call (e.g., `is_tool_successful`) and formatting its output for the LLM, based on the tool's specific output type.
-    *   **`agent/executor/runner.py`**: Contains the `run_single_tool` function, which is responsible for invoking an individual tool from the `Toolbelt` with the prepared arguments.
-    *   **`agent/executor/executor.py`**: Houses the main refactored `tool_executor_step` logic. This orchestrates the tool execution process using the components above: parsing calls, running them via `run_single_tool`, tracking attempts with `FixCycleTracker`, and processing results with `output_handlers`.
+*   **`runner.py`:** Contains `run_single_tool`, the core function for invoking a tool. It handles argument injection (e.g., `project_subdirectory`), PTY task handling, and structured error catching.
+*   **`output_handlers.py`:** Implements a registry-based system (`OUTPUT_HANDLERS`) for determining the success of a tool call (`is_tool_successful`) and formatting its output into a string (`format_tool_output`) suitable for the LLM.
+*   **`parser.py`:** Provides utilities to safely parse `ToolCall` objects from the LLM's AIMessage.
+*   **`fix_cycle.py`:** Defines the `FixCycleTracker` for managing the state of self-healing loops (e.g., tracking how many times a fix has been attempted for a failing tool).
 
-### 3.4. Toolbelt
+### 3.5. Toolbelt (`tools/`)
 
-*   **Technology:** Python
-*   **Responsibilities:**
-    *   A collection of functions that the agent can invoke to interact with the development environment. Each tool is a wrapper around a specific capability.
-    *   **`file_io_tools`:** Read from and write to the `REPO_DIR` workspace.
-    *   **`shell_tools`:** Execute shell commands (e.g., `npm install`, `npx create-next-app`, `ls -R`) within the workspace.
-    *   **`patch_tools`:** Apply `diff` patches to files, enabling precise code modifications.
-    *   **`lsp_tools`:** Interact with the Language Server Protocol (LSP) for code intelligence (e.g., getting definitions, hover information).
-    *   **`diagnostics_tools`:** Fetch diagnostics (errors, warnings) from the LSP.
-    *   **`vector_store_tools`:** Perform semantic search over the codebase for context retrieval.
+This is a collection of Python functions decorated with `@tool` that the agent can invoke. They are the agent's interface to the outside world.
 
-### 3.5. LSP Manager
+*   **`shell_mcp_tools.py`:** Executes shell commands via the MCP server. Includes a `pty: bool` flag to delegate long-running commands to the `PTYManager`.
+*   **`file_io_mcp_tools.py`:** Reads and writes files via the MCP server.
+*   **`patch_tools.py`:** Applies `diff` patches using `git apply` for precise code modifications.
+*   **`diagnostics_tools.py`:** Fetches diagnostics (errors, warnings) from the LSP Manager.
+*   **`lsp_tools.py`:** Performs code-intelligent actions like go-to-definition and hover.
+*   **`vector_store_tools.py`:** Performs semantic search over the codebase.
 
-*   **Technology:** `pygls`, Python
-*   **Responsibilities:**
-    *   Manages the lifecycle of Language Server Protocol instances (e.g., `typescript-language-server`).
-    *   Maintains a registry of LSP instances, keyed by workspace path, to handle multiple projects or subdirectories.
-    *   Provides a clean, asynchronous interface for the LSP tools to send requests (e.g., `textDocument/definition`) and receive responses.
-    *   Caches diagnostics reported by the language server.
+### 3.6. Sub-system Managers
 
-### 3.6. Live Preview (WebContainer)
+These are singleton-style managers that handle persistent, stateful resources like server processes.
 
-*   **Technology:** StackBlitz WebContainers
-*   **Responsibilities:**
-    *   Runs a full, in-browser Node.js development server.
-    *   Maintains a virtual file system that is kept in sync with the agent's `REPO_DIR` workspace via messages from the UI.
-    *   Executes commands like `npm install` and `npm run dev` within the container.
-    *   Renders the running Next.js application in an iframe, providing an instant, interactive preview with Hot Module Replacement (HMR).
+*   **`agent/lsp_manager.py`:** Manages the lifecycle of Language Server Protocol instances (e.g., `typescript-language-server`). It maintains a registry of LSP clients keyed by workspace path, provides an async interface for tools, and caches diagnostics. It can also restart the LSP server when `tsconfig.json` changes.
+*   **`agent/pty/manager.py`:** Manages pseudo-terminal processes for long-running, interactive shell commands. It spawns processes, streams their `stdout`/`stderr` via callbacks, and ensures they are properly terminated on exit.
 
 ---
 
 ## 4. Data Flow & Communication
 
-1.  **User Interaction:** The user sends a prompt through the **UI**.
-2.  **Request:** The prompt is sent over a WebSocket to the **FastAPI Gateway**.
-3.  **Agent Invocation:** The Gateway invokes the **LangGraph Agent** with the prompt.
-4.  **Planning & Execution:** The Agent plans its steps and calls a function from the **Toolbelt**.
-5.  **Action:** The tool performs an action, such as writing a file to the **Workspace** or querying the **LSP Manager**.
-6.  **Streaming Feedback:** As the agent executes, it streams events (LLM tokens, tool calls, file updates) back through the **Gateway** to the **UI**.
-7.  **Preview Update:** When the UI receives a file update event, it updates the file system in the **WebContainer**, which triggers a refresh of the **Live Preview**.
-8.  **Iteration:** The user sees the result in the preview and the agent's logs, and provides the next prompt, continuing the cycle.
+A typical user interaction follows this sequence:
+
+1.  **Prompt:** The user sends a prompt (e.g., "Create a new Next.js app") from the **UI**.
+2.  **WebSocket Message:** The UI sends a JSON message to the **FastAPI Gateway**.
+3.  **Agent Invocation:** The Gateway initiates an agent run by calling `agent_graph.astream_events` with the user's prompt, passing in PTY callbacks into the initial `AgentState`.
+4.  **Reasoning:** The **Agent**'s `planner_reason_step` calls the **LLM API**, determines `shell.run` is the best tool, and updates the state.
+5.  **Argument Generation:** The `planner_arg_step` calls the **LLM API** again to generate the `npx create-next-app...` command arguments for the `shell.run` tool.
+6.  **Execution (PTY Flow):**
+    a. The `tool_executor_step` calls `run_single_tool` in the **Agent Executor**.
+    b. `run_shell` sees `pty=True` and calls the **PTY Manager** to spawn the command.
+    c. The `PTYManager` emits `task_started`, `task_log`, and `task_finished` events via the callbacks provided by the Gateway.
+    d. The **Gateway** relays these PTY events directly to the **UI**, which displays them in the `TerminalView`.
+    e. The agent's graph execution *pauses* until the PTY task is complete.
+7.  **Result & Continuation:** Once the PTY task finishes, the agent's graph unblocks. The tool result (a simple success message) is added to the state. The agent loops back to the **Reasoning** step, sees the successful scaffolding, and plans its next action (e.g., `ls -R` to inspect files).
+8.  **Final Response:** When the agent's plan is complete, it generates a final summary message, which is streamed to the UI as the last event.
 
 ---
 
-## 5. Document Maintenance
+## 5. Key Architectural Patterns
 
-This architecture document should be considered a living document. It must be updated whenever significant changes are made to the core components, their responsibilities, or the communication flow between them. This ensures it remains an accurate and valuable resource for all team members.
+*   **Decoupled Tooling via MCP:** Tools for file system and shell access do not directly perform I/O. Instead, they are clients to the **MCP Tool Server**, which runs as a separate process. This aligns with modern agentic architectures (Figma, VS Code) and allows the tool server to be secured and managed independently.
+*   **Stateful Managers for Processes:** The `LspManager` and `PTYManager` encapsulate the complexity of managing external, long-running processes, providing clean, async interfaces to the rest of the application and ensuring proper resource cleanup.
+*   **Declarative Self-Healing:** The agent doesn't have a hardcoded "fix error" state. Instead, when a tool like `run_shell` or `get_diagnostics` returns an error, that error is simply added to the agent's state as a `ToolMessage`. The main planner LLM sees the error in its context and decides on the next step, which could be reading the problematic file, applying a patch, or asking the user for clarification.
+*   **Configuration as Code:** All application settings, from API keys to server URLs and file paths, are managed centrally in `common/config.py` using Pydantic's `BaseSettings`, which loads from both environment variables and `.env` files.
+
+---
+
+## 6. Document Maintenance
+
+This architecture document is a living document. It must be updated whenever significant changes are made to the core components, their responsibilities, or the communication flow between them.
