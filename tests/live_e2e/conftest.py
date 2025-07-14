@@ -1,9 +1,11 @@
 import pytest
+import pytest_asyncio
 import itertools
 from pathlib import Path
 import os
 import threading
 import uvicorn
+from fastmcp import Client
 import socket
 import asyncio
 import subprocess
@@ -152,14 +154,11 @@ def find_free_port():
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
-@pytest.fixture
-def live_mcp_server_fixture(request):
-    """Pytest fixture to run the live MCP server in a background thread."""
+@pytest_asyncio.fixture
+async def live_mcp_client(request) -> Client:
+    """Pytest fixture to run the live MCP server and yield a connected client."""
     host = "127.0.0.1"
     port = find_free_port()
-    # Set the MCP_SERVER_URL for the agent to connect to
-    os.environ["MCP_SERVER_URL"] = f"http://{host}:{port}/mcp"
-    get_settings().MCP_SERVER_URL = os.environ["MCP_SERVER_URL"]
 
     class UvicornTestServer(uvicorn.Server):
         _startup_done = threading.Event()
@@ -188,7 +187,8 @@ def live_mcp_server_fixture(request):
         shell_logger.setLevel(logging.CRITICAL)
 
     try:
-        yield
+        async with Client(live_mcp_server) as client:
+            yield client
     finally:
         server.stop()
         # Restore original logging level

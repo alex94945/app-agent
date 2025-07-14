@@ -1,13 +1,5 @@
 # tests/conftest.py
 
-# Per LangGraph docs, disable checkpointing for tests to avoid serialization errors
-# with MagicMock objects in the agent state.
-from langgraph.checkpoint.memory import InMemorySaver
-from agent.agent_graph import agent_graph
-
-# Disable the checkpointer for all tests by using a transient in-memory saver.
-agent_graph.checkpoint_manager = InMemorySaver()
-
 
 import sys
 from pathlib import Path

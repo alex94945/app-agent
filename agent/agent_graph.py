@@ -30,7 +30,6 @@ def get_type_from_schema(schema_dict: dict) -> Type:
     """Gets the Python type from a JSON-like schema dictionary."""
     return _TYPE_MAP.get(schema_dict.get('type', 'string'), str)
 
-from agent.prompts.initial_scaffold import get_initial_scaffold_prompt
 from agent.prompts.arg_generator_system_prompt import get_arg_generator_system_prompt
 from agent.prompts.planner_system_prompt import PLANNER_SYSTEM_PROMPT
 from agent.state import AgentState
@@ -41,6 +40,7 @@ from agent.executor.output_handlers import format_tool_output
 
 # Import all tools
 from tools.file_io_mcp_tools import read_file, write_file
+from tools.scaffold_tool import scaffold_project, ScaffoldProjectOutput
 from tools.shell_mcp_tools import run_shell
 from tools.patch_tools import apply_patch
 from tools.vector_store_tools import vector_search
@@ -84,8 +84,7 @@ def planner_reason_step(state: AgentState, llm: Optional[BaseChatModel] = None, 
         llm = get_llm_client().with_structured_output(ToolPicker)
 
     if system_prompt is None:
-        tool_names = [tool.name for tool in ALL_TOOLS_LIST]
-        system_prompt = PLANNER_SYSTEM_PROMPT.format(tool_names=tool_names)
+        system_prompt = PLANNER_SYSTEM_PROMPT
 
     prompt_messages = [SystemMessage(content=system_prompt)] + messages
 
@@ -162,57 +161,27 @@ async def tool_executor_step(state: AgentState) -> dict:
     # Format the output for the LLM
     output_content = format_tool_output(output)
 
-    return {
-        "messages": [
-            ToolMessage(
-                content=output_content,
-                tool_call_id=tool_call['id'],
-            )
-        ]
-    }
-
-# --- Executor Node ---
-
-async def set_project_subdirectory_step(state: AgentState) -> dict:
-    """Sets the project subdirectory based on the output of the first tool call."""
-    logger.info("Running set_project_subdirectory_step...")
-    last_message = state['messages'][-1]
-    if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
-        logger.warning("No tool calls found in the last message, skipping subdirectory update.")
-        return {}
-
-    tool_call = last_message.tool_calls[0]
-    if tool_call['name'] != 'shell.run':
-        logger.info(f"Tool call was not shell.run ({tool_call['name']}), skipping subdirectory update.")
-        return {}
-
-    command = tool_call['args'].get('command', '')
-    logger.info(f"Got shell.run command: {command}")
-
-    # Regex to find 'create-react-app <name>', 'npx create-next-app@latest <name>', etc.
-    # It looks for a command followed by a path-like argument.
-    match = re.search(r"(create-react-app|create-next-app(?:@latest)?|vue create|ng new|django-admin startproject|rails new)\s+([\w\-]+)", command)
-
-    if match:
-        project_subdirectory = match.group(2)
-        logger.info(f"Extracted project_subdirectory: {project_subdirectory}")
-        return {"project_subdirectory": project_subdirectory}
+    if isinstance(output, ScaffoldProjectOutput):
+        return {
+            "messages": [
+                ToolMessage(
+                    content=output_content,
+                    tool_call_id=tool_call['id'],
+                )
+            ],
+            "project_subdirectory": output.project_subdirectory,
+        }
     else:
-        logger.warning("Could not extract project_subdirectory from command.")
-        return {}
-
+        return {
+            "messages": [
+                ToolMessage(
+                    content=output_content,
+                    tool_call_id=tool_call['id'],
+                )
+            ]
+        }
 
 # --- Control Flow and Graph Definition ---
-
-
-def should_scaffold(state: AgentState) -> dict:
-    """Determine whether to use the scaffolding prompt or the main planner."""
-    if state.get("project_subdirectory"):
-        logger.info("Project subdirectory is set, skipping scaffold prompt.")
-        return {"next_node": "planner_reasoner"}
-    else:
-        logger.info("Project subdirectory is not set, using scaffold prompt.")
-        return {"next_node": "scaffold_reasoner"}
 
 
 def after_reasoner_router(state: AgentState) -> str:
@@ -234,43 +203,12 @@ def build_state_graph() -> StateGraph:
     workflow = StateGraph(AgentState)
 
     # Add nodes
-    workflow.add_node("planner_reasoner", planner_reason_step)
-    workflow.add_node("planner_arg_generator", planner_arg_step)
-    workflow.add_node("tool_executor", tool_executor_step)
-    workflow.add_node("set_project_subdirectory", set_project_subdirectory_step)
-    # Add the missing should_scaffold node
-    workflow.add_node("should_scaffold", should_scaffold)
-
-    # A separate reasoner for the initial scaffolding, which uses a different system prompt.
-    scaffold_reasoner_runnable = (
-        RunnableLambda(planner_reason_step)
-        .with_config({"run_name": "scaffold_reasoner", "tags": ["scaffolding"]})
-        .bind(system_prompt=get_initial_scaffold_prompt())
-    )
-    workflow.add_node("scaffold_reasoner", scaffold_reasoner_runnable)
+    workflow.add_node("planner_reasoner", RunnableLambda(planner_reason_step))
+    workflow.add_node("planner_arg_generator", RunnableLambda(planner_arg_step))
+    workflow.add_node("tool_executor", RunnableLambda(tool_executor_step))
 
     # Define edges
-    workflow.set_entry_point("should_scaffold")
-    workflow.add_conditional_edges(
-        "should_scaffold",
-        lambda state: state["next_node"],
-        {
-            "scaffold_reasoner": "scaffold_reasoner",
-            "planner_reasoner": "planner_reasoner",
-        }
-    )
-
-    # Edges from the scaffold reasoner
-    workflow.add_conditional_edges(
-        "scaffold_reasoner",
-        after_reasoner_router,
-        {
-            "planner_arg_generator": "planner_arg_generator",
-            END: END
-        }
-    )
-
-    # Edges from the main reasoner
+    workflow.set_entry_point("planner_reasoner")
     workflow.add_conditional_edges(
         "planner_reasoner",
         after_reasoner_router,
@@ -281,10 +219,7 @@ def build_state_graph() -> StateGraph:
     )
     
     workflow.add_edge("planner_arg_generator", "tool_executor")
-
-    # After the first tool execution, set the subdirectory, then loop back to the main reasoner
-    workflow.add_edge("tool_executor", "set_project_subdirectory")
-    workflow.add_edge("set_project_subdirectory", "planner_reasoner")
+    workflow.add_edge("tool_executor", "planner_reasoner")
     return workflow
 
 def compile_agent_graph(
@@ -309,8 +244,6 @@ def compile_agent_graph(
 
 # --- Main Entry Points ---
 
-agent_graph = compile_agent_graph()
-
 async def run_agent(question: str, project_subdirectory: str):
     """Run the agent with a given question and project subdirectory."""
     config = {"configurable": {"thread_id": "test-thread"}}
@@ -323,6 +256,8 @@ async def run_agent(question: str, project_subdirectory: str):
         project_subdirectory=project_subdirectory,
         next_tool_to_call=None,
     )
+
+    agent_graph = compile_agent_graph()
 
     # The astream call was for logging, but invoke is what we need for the final state.
     # To avoid running twice, I'll use invoke directly.

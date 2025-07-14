@@ -10,7 +10,7 @@ from uuid import UUID
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from langchain_core.messages import HumanMessage, AIMessage
 
-from agent.agent_graph import agent_graph
+from agent.agent_graph import compile_agent_graph
 from agent.state import AgentState
 from common.config import settings, PROJECT_ROOT
 from common.ws_messages import (
@@ -134,6 +134,9 @@ async def agent_websocket(websocket: WebSocket):
                 data = json.loads(raw_data)
                 prompt = data.get("prompt", "No prompt provided")
                 logger.info(f"Received prompt: '{prompt}' for thread '{thread_id}'")
+
+                # Compile a fresh graph for each session/request
+                agent_graph = compile_agent_graph()
 
                 config = {"configurable": {"thread_id": thread_id}}
                 initial_state = AgentState(
