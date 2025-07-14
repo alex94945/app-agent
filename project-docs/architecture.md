@@ -1,15 +1,16 @@
 # System Architecture
 
-**Version:** 2.0
-**Date:** July 17, 2024
+**Version:** 2.1
+**Date:** July 14, 2025
 
 ## 1. Overview
 
-This document outlines the architecture of the LLM-powered AI Agent, a system designed to convert natural language prompts into fully functional Next.js web applications. The system is architected as a modular, tool-using AI agent that interprets user requests, plans and executes development tasks, and iteratively refines the generated application through a conversational interface.
+This document outlines the architecture of the LLM-powered AI Agent, a system designed to convert natural language prompts into fully functional Next.js web applications. The system is architected as a modular, tool-using AI agent that interprets user requests, plans and executes development tasks, and iteratively refines a pre-existing template application through a conversational interface.
 
 The core principles guiding this architecture are:
 
 *   **Agent-Centric Design:** A central planner LLM orchestrates the entire workflow, deciding which tools to use and when, rather than following a rigid, predefined graph.
+*   **Modify-in-Place Workflow:** The agent begins with a base Next.js template and modifies it to meet user requirements, mirroring a real-world development process.
 *   **Modularity:** Each component (Gateway, Agent, Tools, LSP/PTY Managers) has a well-defined responsibility, enabling independent development, testing, and enhancement.
 *   **Asynchronous & Stream-First:** The system is built with `asyncio` from the ground up. The FastAPI Gateway uses WebSockets to stream events—from LLM thoughts to PTY logs—in real-time to the UI, providing immediate user feedback.
 *   **Robust Tooling:** The agent's capabilities are defined by a "Toolbelt" of functions that interact with the development environment through stable protocols like MCP (for shell/file ops) and LSP (for code intelligence).
@@ -77,7 +78,7 @@ graph TD
     *   Provides the primary user interface, featuring a `ChatInterface` for prompts and a `MainPanel` for tabbed content.
     *   Manages a single, persistent WebSocket connection to the `FastAPI Gateway`.
     *   Receives and renders a real-time stream of events from the agent, including LLM tokens, tool calls, and PTY logs, using a defined message schema (`ui/src/types/ws_messages.ts`).
-    *   Features a `TerminalView` to display live output from long-running scaffolding and build commands.
+    *   Features a `TerminalView` to display live output from long-running build and test commands.
     *   (Future) Will host a live preview of the generated application.
 
 ### 3.2. FastAPI Gateway (`gateway/`)
@@ -99,7 +100,7 @@ graph TD
     *   Implements a **two-step planner** pattern:
         1.  **Reasoning Step (`planner_reason_step`):** A lightweight LLM call to decide *which* tool to use next, or to finish.
         2.  **Argument Generation Step (`planner_arg_step`):** A second, focused LLM call to generate the JSON arguments for the chosen tool.
-    *   Uses conditional edges (`should_scaffold`, `after_reasoner_router`) to dynamically alter its path based on the current state.
+    *   Uses conditional edges (`after_reasoner_router`) to dynamically alter its path based on the current state.
     *   The agent is designed to be stateless in its nodes; all state is managed explicitly in the `AgentState`.
 
 ### 3.4. Agent Executor (`agent/executor/`)
@@ -135,19 +136,21 @@ These are singleton-style managers that handle persistent, stateful resources li
 
 A typical user interaction follows this sequence:
 
-1.  **Prompt:** The user sends a prompt (e.g., "Create a new Next.js app") from the **UI**.
-2.  **WebSocket Message:** The UI sends a JSON message to the **FastAPI Gateway**.
-3.  **Agent Invocation:** The Gateway initiates an agent run by calling `agent_graph.astream_events` with the user's prompt, passing in PTY callbacks into the initial `AgentState`.
-4.  **Reasoning:** The **Agent**'s `planner_reason_step` calls the **LLM API**, determines `shell.run` is the best tool, and updates the state.
-5.  **Argument Generation:** The `planner_arg_step` calls the **LLM API** again to generate the `npx create-next-app...` command arguments for the `shell.run` tool.
-6.  **Execution (PTY Flow):**
-    a. The `tool_executor_step` calls `run_single_tool` in the **Agent Executor**.
-    b. `run_shell` sees `pty=True` and calls the **PTY Manager** to spawn the command.
-    c. The `PTYManager` emits `task_started`, `task_log`, and `task_finished` events via the callbacks provided by the Gateway.
-    d. The **Gateway** relays these PTY events directly to the **UI**, which displays them in the `TerminalView`.
-    e. The agent's graph execution *pauses* until the PTY task is complete.
-7.  **Result & Continuation:** Once the PTY task finishes, the agent's graph unblocks. The tool result (a simple success message) is added to the state. The agent loops back to the **Reasoning** step, sees the successful scaffolding, and plans its next action (e.g., `ls -R` to inspect files).
-8.  **Final Response:** When the agent's plan is complete, it generates a final summary message, which is streamed to the UI as the last event.
+1.  **Project Setup:** Before the agent is invoked, a base Next.js project template is copied into the `REPO_DIR` workspace.
+2.  **Prompt:** The user sends a prompt (e.g., "Change the heading to 'My Tasks'") from the **UI**.
+3.  **WebSocket Message:** The UI sends a JSON message to the **FastAPI Gateway**.
+4.  **Agent Invocation:** The Gateway initiates an agent run by calling `agent_graph.astream_events`. The initial state includes the user's prompt and the `project_subdirectory` where the template code resides.
+5.  **Inspection & Planning:** The **Agent**'s `planner_reason_step` calls the **LLM API**. To fulfill the request, it first needs to understand the project structure. It plans to call `run_shell` with `ls -R`.
+6.  **Execution & Analysis:** The agent executes `ls -R`, receives the file list, and then calls `read_file` on `src/app/page.tsx` to get its content.
+7.  **Modification Plan:** With the file content in its context, the agent's planner calls the **LLM API** again. It determines it needs to use `apply_patch` and generates the required diff to change the heading text.
+8.  **Execution (Patch):** The `tool_executor_step` calls `apply_patch`. The file is modified in the workspace.
+9.  **Verification (PTY Flow):**
+    a. The agent's planner decides to verify the change by running the build process. It calls `run_shell` with `npm run build` and `pty=True`.
+    b. `run_shell` delegates to the **PTY Manager**, which spawns the command and begins streaming `task_started`, `task_log`, and `task_finished` events to the **Gateway**.
+    c. The **Gateway** relays these PTY events to the **UI**, which displays them in the `TerminalView`.
+    d. The agent's graph execution *pauses* until the PTY task is complete.
+10. **Result & Continuation:** Once the build finishes successfully, the agent's graph unblocks. The agent sees the successful result and plans its final response.
+11. **Final Response:** The agent generates a summary message ("I've updated the heading and verified the build."), which is streamed to the UI as the last event.
 
 ---
 
@@ -155,7 +158,7 @@ A typical user interaction follows this sequence:
 
 *   **Decoupled Tooling via MCP:** Tools for file system and shell access do not directly perform I/O. Instead, they are clients to the **MCP Tool Server**, which runs as a separate process. This aligns with modern agentic architectures (Figma, VS Code) and allows the tool server to be secured and managed independently.
 *   **Stateful Managers for Processes:** The `LspManager` and `PTYManager` encapsulate the complexity of managing external, long-running processes, providing clean, async interfaces to the rest of the application and ensuring proper resource cleanup.
-*   **Declarative Self-Healing:** The agent doesn't have a hardcoded "fix error" state. Instead, when a tool like `run_shell` or `get_diagnostics` returns an error, that error is simply added to the agent's state as a `ToolMessage`. The main planner LLM sees the error in its context and decides on the next step, which could be reading the problematic file, applying a patch, or asking the user for clarification.
+*   **Declarative Self-Healing:** The agent doesn't have a hardcoded "fix error" state. When a tool like `run_shell` or `get_diagnostics` returns an error, that error is simply added to the agent's state as a `ToolMessage`. The main planner LLM sees the error in its context and decides on the next step, which could be reading the problematic file, applying a patch, or asking the user for clarification.
 *   **Configuration as Code:** All application settings, from API keys to server URLs and file paths, are managed centrally in `common/config.py` using Pydantic's `BaseSettings`, which loads from both environment variables and `.env` files.
 
 ---

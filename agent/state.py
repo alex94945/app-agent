@@ -1,16 +1,20 @@
 # agent/state.py
 
-from typing import TypedDict, List, Annotated, Optional, Dict, Callable, Any, Awaitable
-from pydantic import Field
+from typing import List, Annotated, Optional, Dict
+from uuid import UUID
+from pydantic import Field, BaseModel
 from langchain_core.messages import BaseMessage
 import operator
 
-# The `operator.add` annotation tells LangGraph to append messages
-# to this list rather than overwriting it.
-class AgentState(TypedDict):
+
+
+class AgentState(BaseModel):
     """
     Represents the state of our LangGraph agent.
     """
+    class Config:
+        arbitrary_types_allowed = True
+
     # The user's input prompt
     input: Optional[str] = Field(default=None, description="The initial user input.")
     
@@ -26,5 +30,7 @@ class AgentState(TypedDict):
     # Serialized state for FixCycleTracker
     fix_cycle_tracker_state: Optional[dict] = None
 
-    # The name of the tool chosen by the reason step, to be used by the arg step.
-    next_tool_to_call: Optional[str] = Field(default=None, description="The name of the tool selected by the reasoning planner.")
+
+
+    # The planner's reasoning for the current step
+    reasoning: Optional[str] = Field(default=None, description="The planner's reasoning for the current step.")

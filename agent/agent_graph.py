@@ -30,10 +30,10 @@ def get_type_from_schema(schema_dict: dict) -> Type:
     """Gets the Python type from a JSON-like schema dictionary."""
     return _TYPE_MAP.get(schema_dict.get('type', 'string'), str)
 
-from agent.prompts.arg_generator_system_prompt import get_arg_generator_system_prompt
-from agent.prompts.planner_system_prompt import PLANNER_SYSTEM_PROMPT
+from agent.prompts.planner_system_prompt import PLANNER_SYSTEM_PROMPT_TEMPLATE
 from agent.state import AgentState
 from common.llm import get_llm_client
+from agent.models import PlannerOutput
 
 from agent.executor.output_handlers import format_tool_output
 
@@ -65,139 +65,111 @@ logger = logging.getLogger(__name__)
 MAX_ITERATIONS = 15
 
 
-# --- Planner Nodes (Two-Step: Reason -> Act) ---
+# --- Planner Node ---
 
-class ToolPicker(BaseModel):
-    """A tool to perform the requested action, or finish if the task is complete."""
-    tool_name: Optional[str] = Field(
-        default=None, 
-        description="The name of the tool to use, or leave blank if the task is complete."
-    )
-    summary: str = Field(
-        description="A brief summary of your reasoning for choosing this tool, or a summary of why the task is complete."
-    )
-
-def planner_reason_step(state: AgentState, llm: Optional[BaseChatModel] = None, system_prompt: Optional[str] = None) -> dict:
-    """First planner step: LLM call without tool schemas to decide which tool to use."""
-    messages = state['messages']
+def planner_reason_step(state: AgentState, llm: Optional[BaseChatModel] = None) -> dict:
+    """Single planner step: LLM call to decide on the next tool or a conversational reply."""
+    messages = state.messages
     if llm is None:
-        llm = get_llm_client().with_structured_output(ToolPicker)
+        llm = get_llm_client().with_structured_output(
+            PlannerOutput, method="function_calling"
+        )
 
-    if system_prompt is None:
-        system_prompt = PLANNER_SYSTEM_PROMPT
+    # Generate the tool list for the prompt (name + description)
+    tool_docs = "\n".join([f"• `{tool.name}`: {tool.description}" for tool in ALL_TOOLS_LIST])
+    system_prompt = PLANNER_SYSTEM_PROMPT_TEMPLATE.format(tool_list=tool_docs)
 
+    # The reasoner needs the whole conversation history
     prompt_messages = [SystemMessage(content=system_prompt)] + messages
+    logger.info(f"[PlannerStep] LLM Input: {prompt_messages}")
 
-    logger.info(f"Invoking reason step with messages: {prompt_messages}")
-    result = llm.invoke(prompt_messages)
-    logger.info(f"Reason step result: {result}")
-    return {"tool_picker": result}
+    try:
+        result: PlannerOutput = llm.invoke(prompt_messages)
+        logger.info(f"[PlannerStep] LLM Output: {result}")
+    except Exception as e:
+        logger.error(f"[PlannerStep] LLM invocation failed: {e}", exc_info=True)
+        raise
 
-def planner_arg_step(state: AgentState) -> dict:
-    """This step generates the arguments for the tool chosen in the reason step."""
-    tool_name = state.get("next_tool_to_call")
-    if not tool_name:
-        # The planner has decided the task is complete.
-        # We pass through the AIMessage from the previous step.
-        logger.info("Arg step is skipping: task is complete.")
-        return {}
+    ai_msg = AIMessage(
+        content=result.reply or "",
+        additional_kwargs={"summary": result.summary, "thought": result.thought},
+    )
+    if result.tool:
+        tool_call = {
+            "name": result.tool,
+            "args": result.tool_input or {},
+            "id": str(uuid4()),
+        }
+        ai_msg.tool_calls = [tool_call]
 
-    tool = next((t for t in ALL_TOOLS_LIST if t.name == tool_name), None)
-    if tool is None:
-        logger.warning(f"Tool '{tool_name}' not found in available tools.")
-        return {}
+    logger.info(f"[PlannerStep] EXIT | AI Message: {ai_msg} | Iteration: {state.iteration_count}")
+    return {"messages": [ai_msg]}
 
-    # Prepare the prompt for argument generation
-    tool_args_schema = tool.args_schema.schema() if hasattr(tool, 'args_schema') else {}
-    system_prompt = get_arg_generator_system_prompt(tool_name, tool.description, tool_args_schema.get('properties', {}))
-    messages = state['messages']
-    llm = get_llm_client().with_structured_output(tool.args_schema)
-    prompt_messages = [SystemMessage(content=system_prompt)] + messages
-
-    logger.info(f"Invoking arg step for tool '{tool_name}' with messages: {prompt_messages}")
-    response_args = llm.invoke(prompt_messages)
-    args_dict = response_args.dict() if hasattr(response_args, 'dict') else response_args.model_dump()
-
-    # LangChain expects tool calls to be in a specific format.
-    tool_call = {
-        "name": tool_name,
-        "args": args_dict,
-        "id": str(uuid4()),
-    }
-
-    # The state should be updated by appending the new tool call to the existing messages.
-    # The reasoning message is already the last message in the list.
-    # Clear the next_tool_to_call so we don't loop.
-    return {
-        "messages": [AIMessage(content="", tool_calls=[tool_call])],
-        "next_tool_to_call": None
-    }
 
 # --- Executor Node ---
 
 async def tool_executor_step(state: AgentState) -> dict:
     """Executes the chosen tool with the provided arguments and returns the output."""
-    tool_call = state['messages'][-1].tool_calls[0]
+    tool_call = state.messages[-1].tool_calls[0]
     tool_name = tool_call['name']
     tool_args = tool_call['args']
-
+    logger.info(f"[ToolExecutorStep] ENTRY | Tool: {tool_name} | Args: {tool_args} | Iteration: {state.iteration_count}")
     tool = next((t for t in ALL_TOOLS_LIST if t.name == tool_name), None)
     if tool is None:
         error_message = f"Tool '{tool_name}' not found."
+        logger.error(f"[ToolExecutorStep] {error_message}")
         return {"messages": [ToolMessage(content=error_message, tool_call_id=tool_call['id'])]}
-
     try:
-        # Tool execution may be async; run in a thread if not
         if hasattr(tool, 'ainvoke'):
+            logger.info(f"[ToolExecutorStep] Invoking async tool '{tool_name}'...")
             output = await tool.ainvoke(tool_args)
         else:
-            # Run synchronous tools in a thread to avoid blocking the main event loop.
+            logger.info(f"[ToolExecutorStep] Invoking sync tool '{tool_name}' in thread...")
             output = await asyncio.to_thread(tool.invoke, tool_args)
+        logger.info(f"[ToolExecutorStep] Tool '{tool_name}' output: {output}")
     except Exception as e:
         error_message = f"Error executing tool {tool_name}: {e}"
-        logger.error(error_message, exc_info=True)
+        logger.error(f"[ToolExecutorStep] {error_message}", exc_info=True)
         return {"messages": [ToolMessage(content=error_message, tool_call_id=tool_call['id'])]}
-
-    # Format the output for the LLM
     output_content = format_tool_output(output)
-
+    logger.info(f"[ToolExecutorStep] EXIT | Tool: {tool_name} | OutputContent: {output_content}")
     return {
         "messages": [ToolMessage(content=output_content, tool_call_id=tool_call['id'])]
     }
 
+
 # --- Control Flow and Graph Definition ---
 
-
-def after_reasoner_router(state: AgentState) -> str:
-    """Routes after the reasoning step. If a tool is chosen, generate args. Otherwise, end."""
-    if state.get("next_tool_to_call"):
-        return "planner_arg_generator"
-    logger.info("Reasoner did not choose a tool. Ending.")
+def after_planner_router(state: AgentState) -> str:
+    """This router checks if the planner has chosen a tool. If so, it routes to the tool executor.
+    Otherwise, it ends the process."""
+    last = state.messages[-1]
+    if getattr(last, "tool_calls", []):
+        logger.info("[Router] Planner chose a tool. Routing to Tool Executor.")
+        return "tool_executor"
+    logger.info("[Router] Planner did not choose a tool. Ending process.")
     return END
 
 
-def build_state_graph() -> StateGraph:
-    """Builds the LangGraph StateGraph for the autonomous agent, without compiling it."""
+def build_agent_graph() -> StateGraph:
+    """This function builds and returns the agent state graph."""
     workflow = StateGraph(AgentState)
 
-    # Add nodes and define edges
-    workflow.set_entry_point("planner_reasoner")
-    workflow.add_node("planner_reasoner", planner_reason_step)
-    workflow.add_node("planner_arg_generator", planner_arg_step)
+    # Add the nodes
+    workflow.add_node("planner", planner_reason_step)
     workflow.add_node("tool_executor", tool_executor_step)
 
-    # Edges from the main reasoner
+    # Set the entry point
+    workflow.set_entry_point("planner")
+
+    # Add the edges
     workflow.add_conditional_edges(
-        "planner_reasoner",
-        after_reasoner_router,
-        {
-            "planner_arg_generator": "planner_arg_generator",
-            END: END
-        }
+        "planner",
+        after_planner_router,
+        {"tool_executor": "tool_executor", END: END},
     )
-    
-    workflow.add_edge("planner_arg_generator", "tool_executor")
-    workflow.add_edge("tool_executor", "planner_reasoner")
+    workflow.add_edge("tool_executor", "planner")
+
     return workflow
 
 def compile_agent_graph(
@@ -206,7 +178,7 @@ def compile_agent_graph(
     interrupt_before: Optional[list[str]] = None,
 ) -> Pregel:
     """Return a compiled graph; when checkpointer is False or None, no persistence."""
-    graph = build_state_graph()
+    graph = build_agent_graph()
     
     cp = None
     if checkpointer is True:  # production default
@@ -255,4 +227,4 @@ async def run_agent(question: str, project_subdirectory: str):
     if isinstance(final_state, tuple):
         final_state = final_state[-1]
 
-    return final_state["messages"][-1]
+    return final_state.messages[-1]

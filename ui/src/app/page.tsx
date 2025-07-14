@@ -68,6 +68,7 @@ export default function Home() {
         displayMsg = { source: 'tool', content: `Result from ${msg.d.tool_name}: ${JSON.stringify(msg.d.result)}`, type: 'tool_result' };
         break;
       case 'final':
+        displayMsg = { source: 'agent', content: msg.d, type: 'text' };
         // When a final message is received, switch back to the preview
         setActiveTab('preview');
         break;

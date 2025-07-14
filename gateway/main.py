@@ -11,6 +11,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from langchain_core.messages import HumanMessage, AIMessage
 
 from agent.agent_graph import compile_agent_graph
+from agent.pty.manager import get_pty_manager
 from agent.state import AgentState
 from common.config import settings, PROJECT_ROOT
 from common.ws_messages import (
@@ -21,6 +22,7 @@ from common.ws_messages import (
     TaskStartedMessage,
     TaskLogMessage,
     TaskFinishedMessage,
+    TokenMessage,
     TaskStartedData,
     TaskLogData,
     TaskFinishedData,
@@ -62,7 +64,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
 @app.get("/health", tags=["Health"])
 async def health_check():
     """
@@ -79,12 +80,19 @@ async def agent_websocket(websocket: WebSocket):
     Accepts user prompts and streams back agent events and PTY logs.
     """
     await websocket.accept()
+    logger.info("WebSocket connection accepted. Sending initial greeting.")
+    
+    # Send initial greeting message from the agent
+    initial_greeting = "Hello, I'm App Agent. Let me know if you'd like to brainstorm your idea, or get straight into building!"
+    await websocket.send_text(FinalMessage(d=initial_greeting).model_dump_json())
     logger.info("WebSocket connection accepted.")
     try:
         # For now, we'll use a new "thread" for each connection.
         # Later, this could be tied to a user session.
         thread_id = str(uuid.uuid4())
         logger.info(f"Generated new thread_id for connection: {thread_id}")
+
+        pty_manager = get_pty_manager()
 
         # --- PTY Task Management ---
         task_start_times: Dict[UUID, datetime.datetime] = {}
@@ -125,6 +133,9 @@ async def agent_websocket(websocket: WebSocket):
             "on_output": on_pty_output,
             "on_complete": on_pty_complete,
         }
+        pty_manager.set_callbacks(pty_callbacks)
+
+        messages: list[HumanMessage | AIMessage] = []
 
         while True:
             raw_data = await websocket.receive_text()
@@ -134,24 +145,49 @@ async def agent_websocket(websocket: WebSocket):
                 data = json.loads(raw_data)
                 prompt = data.get("prompt", "No prompt provided")
                 logger.info(f"Received prompt: '{prompt}' for thread '{thread_id}'")
+                messages.append(HumanMessage(content=prompt))
 
                 # Compile a fresh graph for each session/request
                 agent_graph = compile_agent_graph()
 
                 config = {"configurable": {"thread_id": thread_id}}
                 initial_state = AgentState(
-                    messages=[HumanMessage(content=prompt)]
+                    messages=messages
                 )
 
                 # --- Stream Agent Events --- #
+                task_in_progress = False
                 async for event in agent_graph.astream_events(initial_state, config, version="v1"):
                     kind = event["event"]
-                    
-                    if kind == "on_tool_start":
+
+                    if kind == "on_chain_end" and event["name"] == "planner":
+                        output = event['data'].get('output')
+                        if output and isinstance(output, dict) and output.get('messages'):
+                            ai_message = output['messages'][-1]
+                            if isinstance(ai_message, AIMessage):
+                                # Persist the full AIMessage from the planner to maintain agent context
+                                messages.append(ai_message)
+
+                                # NOTE: We no longer handle tool calls here. See on_tool_start.
+                                if ai_message.content and not ai_message.tool_calls:
+                                    # No tool, so it's a conversational reply.
+                                    reply = ai_message.content
+                                    logger.info(f"Sending agent message: {reply}")
+                                    await websocket.send_text(FinalMessage(d=reply).model_dump_json())
+                                elif not ai_message.content and not ai_message.tool_calls:
+                                    # Fallback for unexpected cases where there's no tool and no reply.
+                                    logger.warning(f"No tool or reply found in AI message: {ai_message}")
+
+                    elif kind == "on_tool_start":
                         logger.info(f"Tool Start: {event['name']} with args {event['data'].get('input')}")
-                        await websocket.send_text(
-                            ToolCallMessage(d={"name": event['name'], "args": event['data'].get('input')}).model_dump_json()
-                        )
+                        # A tool was chosen, so a task is starting.
+                        task_in_progress = True
+                        # The summary is on the last AI message from the planner.
+                        last_ai_message = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
+                        if last_ai_message:
+                            summary = last_ai_message.additional_kwargs.get('summary', 'Starting task...')
+                            logger.info(f"Sending tool summary: {summary}")
+                            await websocket.send_text(TokenMessage(d=summary).model_dump_json())
 
                     elif kind == "on_tool_end":
                         logger.info(f"Tool End: {event['name']}")
@@ -159,26 +195,21 @@ async def agent_websocket(websocket: WebSocket):
                         # Don't send PTY task handles to the UI
                         if isinstance(output, dict) and output.get("type") == "pty_task":
                             continue
-                        await websocket.send_text(
-                            ToolResultMessage(d={"tool_name": event['name'], "result": output}).model_dump_json()
-                        )
                     
                     elif kind == "on_chat_model_stream":
-                        content = event['data']['chunk'].content
-                        if content:
-                            await websocket.send_text(
-                                TokenMessage(d=content).model_dump_json()
-                            )
+                        # Suppress token streaming if a task is in progress
+                        if not task_in_progress:
+                            content = event['data']['chunk'].content
+                            if content:
+                                await websocket.send_text(
+                                    TokenMessage(d=content).model_dump_json()
+                                )
 
                     elif kind == "on_graph_end":
                         logger.info("Graph End")
-                        final_state = event['data'].get('output')
-                        if final_state and final_state.get('messages'):
-                            last_message = final_state['messages'][-1]
-                            if isinstance(last_message, AIMessage) and last_message.content:
-                                await websocket.send_text(
-                                    FinalMessage(d=last_message.content).model_dump_json()
-                                )
+                        # The full conversation history is now managed by appending messages as they occur.
+                        # We no longer need to send a final message here, as it's either a confirmation or a reply.
+                        pass
                     else:
                         # For other events, we can just pass as they are not critical for the UI
                         pass
@@ -206,6 +237,9 @@ async def agent_websocket(websocket: WebSocket):
         except Exception:
             pass  # Ignore if sending fails
     finally:
+        # Clean up the PTY callbacks for this session
+        pty_manager = get_pty_manager()
+        pty_manager.clear_callbacks()
         logger.info("Closing WebSocket connection handler.")
 
 

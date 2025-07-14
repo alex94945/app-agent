@@ -131,6 +131,13 @@ async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_clie
         with patch('tools.shell_mcp_tools.open_mcp_session', new=mock_mcp_session_cm), \
              patch('tools.file_io_mcp_tools.open_mcp_session', new=mock_mcp_session_cm):
             try:
+                # Stream agent events for granular logging
+                logger.info("[E2E] Streaming agent events...")
+                async for event in agent_graph.astream(initial_state, config=config):
+                    for key, value in event.items():
+                        logger.info(f"[E2E] Agent event: {key} | Value: {value}")
+                logger.info("[E2E] Agent event streaming complete.")
+                # Fallback: get final state if needed
                 final_state = await agent_graph.ainvoke(initial_state, config)
             finally:
                 t1 = time.time()

@@ -13,7 +13,6 @@ from common.mcp_session import open_mcp_session
 from mcp.shared.exceptions import McpError, ErrorData
 from common.config import get_settings
 from agent.pty.manager import get_pty_manager
-from agent.state import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +60,6 @@ async def run_shell(
     stdin: Optional[str] = None, 
     pty: bool = False, 
     task_name: Optional[str] = None,
-    # This is not part of the tool's schema, but is passed from the executor
-    state: Optional[AgentState] = None,
 ) -> Union[RunShellOutput, PTYTask]:
     """
     Executes a shell command in the repository workspace.
@@ -76,17 +73,11 @@ async def run_shell(
         absolute_cwd = str(repo_dir / working_directory_relative_to_repo)
 
     if pty:
-        if not state or not state.get("pty_callbacks"): 
-            raise ValueError("PTY mode requires callbacks in agent state, but none were found.")
-        
         pty_manager = get_pty_manager()
-        pty_callbacks = state["pty_callbacks"]
-
         task_id = await pty_manager.spawn(
             command=shlex.split(command),
             cwd=absolute_cwd,
-            on_output=pty_callbacks["on_output"],
-            on_complete=pty_callbacks["on_complete"],
+            task_name=task_name or command,
         )
         return PTYTask(task_id=task_id)
 

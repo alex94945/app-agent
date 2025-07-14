@@ -31,6 +31,9 @@ ignore_patterns = [
   "*yarn-error.log*",
   "ui/.next/*",
 
+  # template boilerplate
+  "templates/nextjs-base/*",
+
   # E2E test outpu
   "workspace_dev/*",
 
