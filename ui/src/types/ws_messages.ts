@@ -64,6 +64,17 @@ export interface TaskFinishedMessage {
   d: TaskFinishedData;
 }
 
+// File system update message
+export interface FileUpdateData {
+  path: string;
+  content: string;
+}
+
+export interface FileUpdateMessage {
+  t: 'file_update';
+  d: FileUpdateData;
+}
+
 // Union type for all possible incoming WebSocket messages
 export type WsMessage = 
   | TokenMessage 
@@ -73,5 +84,6 @@ export type WsMessage =
   | ErrorMessage
   | TaskStartedMessage
   | TaskLogMessage
-  | TaskFinishedMessage;
+  | TaskFinishedMessage
+  | FileUpdateMessage;
 

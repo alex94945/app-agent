@@ -10,6 +10,7 @@ export default function Home() {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
+  const [files, setFiles] = useState<Record<string, string>>({});
   const [activeTab, setActiveTab] = useState<'preview' | 'terminal'>('preview');
 
   useEffect(() => {
@@ -87,6 +88,9 @@ export default function Home() {
         setMessages(prev => [...prev, { source: 'system', content: `Task finished with state: ${msg.d.state}`, type: 'text' }]);
         setTerminalLogs(prev => [...prev, `Task finished with state: ${msg.d.state}`]);
         break;
+      case 'file_update':
+        setFiles(prev => ({ ...prev, [msg.d.path]: msg.d.content }));
+        break;
     }
     if (displayMsg) {
       setMessages(prev => [...prev, displayMsg]);
@@ -112,6 +116,7 @@ export default function Home() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         terminalLogs={terminalLogs}
+        files={files}
       />
     </main>
   );

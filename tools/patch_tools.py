@@ -23,19 +23,23 @@ class ApplyPatchInput(BaseModel):
 
 @tool(args_schema=ApplyPatchInput)
 async def apply_patch(file_path_in_repo: str, diff_content: str) -> ApplyPatchOutput:
-    """
-    Applies a patch to files in the repository workspace using a robust, git-based workflow.
-    This tool first stages all files (including new ones), then checks the patch,
-    and finally applies it. It uses stdin to avoid temporary files.
+    """Applies a git-style patch to the workspace.
+
+    Args:
+        file_path_in_repo: A representative file path for the patch, used for logging. The patch content itself determines which files are modified.
+        diff_content: The content of the diff/patch to apply, in unidiff format.
     """
     logger.info(f"Tool: apply_patch called for file hint: '{file_path_in_repo}'")
 
-    try:
-        # Ensure diff content ends with a newline for git apply robustness
-        if not diff_content.endswith("\n"):
-            diff_content += "\n"
+    if not diff_content:
+        return ApplyPatchOutput(ok=False, message='Patch content is empty.')
 
-        # The LLM can generate unreliable index lines; remove them to improve robustness.
+    try:
+        # Clean up patch content to avoid common errors from LLM generation.
+        # - Strip leading/trailing whitespace.
+        # - Ensure it ends with a single newline.
+        # - Remove git's internal `index` lines, which can be unreliable.
+        diff_content = diff_content.strip() + '\n'
         diff_content = re.sub(r"^index .*$\n", "", diff_content, flags=re.MULTILINE)
 
         # Always run git commands from the repository root and use -p1 strip level.
