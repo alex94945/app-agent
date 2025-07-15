@@ -75,6 +75,22 @@ export interface FileUpdateMessage {
   d: FileUpdateData;
 }
 
+// Message for streaming initial file contents
+export interface FileContentMessage {
+    t: 'file_content';
+    d: {
+        path: string;
+        content: string;
+    };
+}
+
+// Message to signal that all initial files have been sent
+export interface InitialFilesLoadedMessage {
+    t: 'initial_files_loaded';
+    d: null; // No data needed for this signal
+}
+
+
 // Union type for all possible incoming WebSocket messages
 export type WsMessage = 
   | TokenMessage 
@@ -85,5 +101,7 @@ export type WsMessage =
   | TaskStartedMessage
   | TaskLogMessage
   | TaskFinishedMessage
-  | FileUpdateMessage;
+  | FileUpdateMessage
+  | FileContentMessage
+  | InitialFilesLoadedMessage;
 

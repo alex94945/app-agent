@@ -1,54 +1,32 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
+import { useWebSocket } from '@/contexts/WebSocketContext';
 import { WebContainer, FileSystemTree } from '@webcontainer/api';
 
-interface PreviewFrameProps {
-  files: Record<string, string>;
-}
+// NOTE: We will get files from an API endpoint now, not props.
+interface PreviewFrameProps {}
 
 let webContainerInstance: WebContainer;
 
-const PreviewFrame: React.FC<PreviewFrameProps> = ({ files }) => {
+const PreviewFrame: React.FC<PreviewFrameProps> = () => {
+  const { lastMessage, sendMessage } = useWebSocket();
+  const [fileSystemTree, setFileSystemTree] = useState<FileSystemTree>({});
+  const hasBooted = useRef(false); // Prevent multiple boots
   const [previewUrl, setPreviewUrl] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [status, setStatus] = useState<string>('Booting WebContainer...');
 
-  useEffect(() => {
-    if (!files || Object.keys(files).length === 0) {
-      // Don't boot until we have files
-      setStatus('Waiting for files from agent...');
-      return;
-    }
-
-    const bootWebContainer = async () => {
-      if (webContainerInstance) {
-        return;
-      }
-
+    useEffect(() => {
+    const bootWebContainer = async (files: FileSystemTree) => {
       try {
         setStatus('Booting WebContainer...');
+        // Set a more permissive CORS policy to allow the iframe to connect
         webContainerInstance = await WebContainer.boot();
         setStatus('WebContainer booted.');
 
-        const fileSystemTree: FileSystemTree = {};
-        for (const [path, content] of Object.entries(files)) {
-          const pathParts = path.split('/');
-          let currentLevel = fileSystemTree;
-          for (let i = 0; i < pathParts.length - 1; i++) {
-            const part = pathParts[i];
-            if (!currentLevel[part]) {
-              currentLevel[part] = { directory: {} };
-            }
-            currentLevel = (currentLevel[part] as { directory: {} }).directory;
-          }
-          currentLevel[pathParts[pathParts.length - 1]] = {
-            file: { contents: content },
-          };
-        }
-
         setStatus('Mounting files...');
-        await webContainerInstance.mount(fileSystemTree);
+        await webContainerInstance.mount(files);
 
         setStatus('Running npm install...');
         const installProcess = await webContainerInstance.spawn('npm', ['install']);
@@ -85,7 +63,44 @@ const PreviewFrame: React.FC<PreviewFrameProps> = ({ files }) => {
       }
     };
 
-    bootWebContainer();
+    // Request initial files when component mounts
+    useEffect(() => {
+      setStatus('Requesting initial project files...');
+      sendMessage(JSON.stringify({ type: 'request_initial_files' }));
+    }, [sendMessage]);
+
+    // Handle incoming WebSocket messages for file content
+    useEffect(() => {
+      if (!lastMessage) return;
+
+      const msg = JSON.parse(lastMessage.data);
+
+      if (msg.t === 'file_content') {
+        const { path, content } = msg.d;
+        setFileSystemTree(prevTree => {
+          const newTree = { ...prevTree };
+          const pathParts = path.split('/');
+          let currentLevel: FileSystemTree = newTree;
+
+          for (let i = 0; i < pathParts.length - 1; i++) {
+            const part = pathParts[i];
+            if (!currentLevel[part]) {
+              currentLevel[part] = { directory: {} };
+            }
+            currentLevel = (currentLevel[part] as { directory: FileSystemTree }).directory;
+          }
+          currentLevel[pathParts[pathParts.length - 1]] = {
+            file: { contents: content },
+          };
+          return newTree;
+        });
+      } else if (msg.t === 'initial_files_loaded' && !hasBooted.current) {
+        hasBooted.current = true; // Ensure we only boot once
+        setStatus('All files received. Booting WebContainer...');
+        bootWebContainer(fileSystemTree);
+      }
+    }, [lastMessage, fileSystemTree]);
+
   }, []);
 
   if (isLoading) {

@@ -6,10 +6,9 @@ interface MainPanelProps {
   activeTab: 'preview' | 'terminal';
   setActiveTab: (tab: 'preview' | 'terminal') => void;
   terminalLogs: string[];
-  files: Record<string, string>;
 }
 
-const MainPanel: React.FC<MainPanelProps> = ({ activeTab, setActiveTab, terminalLogs, files }) => {
+const MainPanel: React.FC<MainPanelProps> = ({ activeTab, setActiveTab, terminalLogs }) => {
   return (
     <div className="flex-1 flex flex-col p-4">
       <div className="flex border-b border-gray-300 dark:border-gray-700">
@@ -28,7 +27,7 @@ const MainPanel: React.FC<MainPanelProps> = ({ activeTab, setActiveTab, terminal
       </div>
       <div className="flex-1 mt-4">
         {activeTab === 'preview' ? (
-          <PreviewFrame files={files} />
+          <PreviewFrame />
         ) : (
           <TerminalView logs={terminalLogs} />
         )}

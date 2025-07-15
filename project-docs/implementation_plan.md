@@ -262,41 +262,37 @@
         -   [x] Added PTY message schemas to `common/ws_messages.py`.
     -   [x] Testing: WebSocket client test that initiates a PTY task and asserts that `task_started`, `task_log`, and `task_finished` events are received correctly.
 
--   [ ] **4. UI: Implement Tabbed Terminal and Preview Panel**
-    -   [ ] Action: Refactor the UI to support a tabbed view for real-time PTY logs and the application preview, separating them from the chat.
-    -   [ ] Files:
-        -   `ui/src/app/page.tsx` (main layout)
-        -   `ui/src/app/components/MainPanel.tsx` (new: for tab switching)
-        -   `ui/src/app/components/TerminalView.tsx` (new: for rendering logs)
-        -   `ui/src/app/components/ChatInterface.tsx` (refactored)
-        -   `ui/src/types/ws_messages.ts` (new: for frontend type definitions)
-    -   [ ] Details:
-        -   [ ] **State Management:** Lift WebSocket connection logic and message state from `ChatInterface` up to `page.tsx`.
-        -   [ ] **Layout:** Modify `page.tsx` to use a new `MainPanel` component that will contain the tabbed interface for the "Terminal" and "Live Preview".
-        -   [ ] **Terminal View:** Create `TerminalView.tsx` to receive log data as props and render it, handling auto-scrolling.
-        -   [ ] **Message Handling:** Update the main page's WebSocket handler to process `task_started`, `task_log`, and `task_finished` messages. On `task_started`, switch to the "Terminal" tab. On `task_finished` and subsequent agent messages, switch to the "Live App Preview" tab.
-        -   [ ] **Chat Interface:** Simplify `ChatInterface.tsx` to be a presentational component, receiving messages and sending user input via props.
-    -   [ ] Testing: Manual E2E test: run the full stack, issue a command like "create a ciao world app," watch the UI switch to the terminal tab and stream logs, then switch to the preview when done.
+---
 
--   [ ] **4. StackBlitz WebContainer Integration (Proof of Concept):**
-    -   [ ] Action: Integrate WebContainer API into Next.js UI.
-    -   [ ] File: `ui/app/components/PreviewFrame.tsx`
-    -   [ ] Details:
-        -   [ ] UI receives minimal Next.js app files from agent.
-        -   [ ] Use `wc.mount()` to write files.
-        -   [ ] Run `npm install`, `npm run dev` via WebContainer API.
-        -   [ ] Embed preview URL in iframe.
-        -   [ ] Pass `REPO_DIR` concept to WebContainer (mount files from agent as if `REPO_DIR` is root).
-    -   [ ] Testing: Minimal Next.js app boots in iframe.`
+### **Phase 4: Live Preview with WebContainers**
 
--   [ ] **5. End-to-End Flow for Preview:**
-    -   [ ] Action: Connect agent's file operations (MCP tools on `REPO_DIR`) to WebContainer.
+-   [x] **1. UI: Implement Tabbed Terminal and Preview Panel**
+    -   [x] Action: Refactored the UI to support a tabbed view for real-time PTY logs and the application preview, separating them from the chat.
+    -   [x] Files: `ui/src/app/page.tsx`, `ui/src/app/components/MainPanel.tsx`, `ui/src/app/components/TerminalView.tsx`, `ui/src/app/components/ChatInterface.tsx`, `ui/src/types/ws_messages.ts`
+    -   [x] Details:
+        -   [x] **State Management:** Lifted WebSocket connection logic into a shared `WebSocketContext`.
+        -   [x] **Layout:** Modified `page.tsx` to use a `MainPanel` component for the "Terminal" and "Live Preview" tabs.
+        -   [x] **Terminal View:** Created `TerminalView.tsx` to render PTY logs.
+        -   [x] **Message Handling:** Updated the main page's WebSocket handler to process PTY messages and switch tabs accordingly.
+
+-   [x] **2. WebContainer Integration & Initial File Loading**
+    -   [x] Action: Integrate WebContainer API and implement initial file loading over WebSocket.
+    -   [x] Files: `ui/app/components/PreviewFrame.tsx`, `gateway/main.py`, `common/ws_messages.py`, `ui/src/types/ws_messages.ts`
+    -   [x] Details:
+        -   [x] UI requests initial workspace files from the gateway on startup.
+        -   [x] Gateway reads all files from `REPO_DIR` and streams them to the UI using a `file_content` message type.
+        -   [x] UI collects streamed files into a `FileSystemTree`.
+        -   [x] On receiving an `initial_files_loaded` signal, the UI boots the WebContainer, mounts the files, runs `npm install` and `npm run dev`, and embeds the preview URL in an iframe.
+    -   [x] Testing: Verified that the template Next.js app boots successfully in the preview iframe on startup.
+
+-   [ ] **3. Real-Time File Synchronization**
+    -   [ ] Action: Connect the agent's file operations to the running WebContainer for live updates.
     -   [ ] Details:
-        -   [ ] Agent uses `write_file` or `apply_patch`.
-        -   [ ] Agent sends `{"t": "file_updated", "d": {"path": "path/in/repo", "content": "..."}}` message.
-        -   [ ] UI receives `file_updated`, uses `wc.fs.writeFile()`. HMR updates iframe.
-        -   [ ] Initial Scaffolding (MVP): Agent uses `run_shell("npx create-next-app ...")`. The agent must then discover the created files (e.g., via `run_shell('ls -R')`) and send them to the UI for mounting in the WebContainer.
-    -   [ ] Testing: Agent creates `app/page.tsx` -> appears in iframe. Agent patches `app/page.tsx` -> iframe updates.
+        -   [ ] When the agent uses `write_file` or `apply_patch`, the tool will emit a `file_update` event.
+        -   [ ] The gateway will forward this event to the UI.
+        -   [ ] The UI will receive the `file_update` message and use `webcontainer.fs.writeFile()` to update the file in the running sandbox.
+        -   [ ] WebContainer's Hot Module Replacement (HMR) should automatically refresh the preview iframe.
+    -   [ ] Testing: Agent creates `app/page.tsx` -> appears in iframe. Agent patches `app/page.tsx` -> iframe updates instantly.
 
 ---
 

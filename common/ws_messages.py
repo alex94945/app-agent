@@ -71,3 +71,17 @@ class TaskFinishedData(BaseModel):
 class TaskFinishedMessage(WsMessage):
     t: Literal["task_finished"] = "task_finished"
     d: TaskFinishedData
+
+# --- File System Streaming Messages ---
+
+class FileContentData(BaseModel):
+    path: str
+    content: str
+
+class FileContentMessage(WsMessage):
+    t: Literal["file_content"] = "file_content"
+    d: FileContentData
+
+class InitialFilesLoadedMessage(WsMessage):
+    t: Literal["initial_files_loaded"] = "initial_files_loaded"
+    d: Optional[None] = None

@@ -4,54 +4,39 @@ import { useState, useEffect } from 'react';
 import ChatInterface, { DisplayMessage } from '@/app/components/ChatInterface';
 import MainPanel from '@/app/components/MainPanel';
 import { WsMessage } from '@/types/ws_messages';
+import { WebSocketProvider, useWebSocket } from '@/contexts/WebSocketContext';
 
-export default function Home() {
-  const [socket, setSocket] = useState<WebSocket | null>(null);
+function ChatPage() {
+  const { lastMessage, sendMessage, isConnected } = useWebSocket();
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
-  const [isConnected, setIsConnected] = useState(false);
   const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
-  const [files, setFiles] = useState<Record<string, string>>({});
   const [activeTab, setActiveTab] = useState<'preview' | 'terminal'>('preview');
 
   useEffect(() => {
-    const ws = new WebSocket('ws://localhost:8001/api/agent');
+    if (isConnected && messages.length === 0) {
+        setMessages([{ source: 'system', content: 'Connected to agent.', type: 'text' }]);
+    } else if (!isConnected && messages.some(m => m.content === 'Connected to agent.')) {
+        setMessages(prev => [...prev, { source: 'system', content: 'Connection lost.', type: 'error' }]);
+    }
+  }, [isConnected]);
 
-    ws.onopen = () => {
-      console.log('WebSocket connected');
-      setIsConnected(true);
-      setMessages([{ source: 'system', content: 'Connected to agent.', type: 'text' }]);
-    };
-
-    ws.onmessage = (event) => {
+  useEffect(() => {
+    if (lastMessage) {
       try {
-        const message: WsMessage = JSON.parse(event.data);
+        const message: WsMessage = JSON.parse(lastMessage.data);
         handleIncomingMessage(message);
       } catch (error) {
-        console.error('Failed to parse incoming message:', event.data);
+        console.error('Failed to parse incoming message:', lastMessage.data);
         setMessages(prev => [...prev, { source: 'system', content: 'Received malformed message.', type: 'error' }]);
       }
-    };
-
-    ws.onclose = () => {
-      console.log('WebSocket disconnected');
-      setIsConnected(false);
-      setMessages(prev => [...prev, { source: 'system', content: 'Connection lost.', type: 'error' }]);
-    };
-
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
-      setMessages(prev => [...prev, { source: 'system', content: 'Connection error.', type: 'error' }]);
-    };
-
-    setSocket(ws);
-
-    return () => {
-      ws.close();
-    };
-  }, []);
+    }
+  }, [lastMessage]);
 
   const handleIncomingMessage = (msg: WsMessage) => {
     let displayMsg: DisplayMessage | null = null;
+    // We will handle file_content messages in PreviewFrame.tsx
+    if (msg.t === 'file_content' || msg.t === 'initial_files_loaded') return;
+
     switch (msg.t) {
       case 'tok':
         setMessages(prev => {
@@ -70,7 +55,6 @@ export default function Home() {
         break;
       case 'final':
         displayMsg = { source: 'agent', content: msg.d, type: 'text' };
-        // When a final message is received, switch back to the preview
         setActiveTab('preview');
         break;
       case 'error':
@@ -88,9 +72,6 @@ export default function Home() {
         setMessages(prev => [...prev, { source: 'system', content: `Task finished with state: ${msg.d.state}`, type: 'text' }]);
         setTerminalLogs(prev => [...prev, `Task finished with state: ${msg.d.state}`]);
         break;
-      case 'file_update':
-        setFiles(prev => ({ ...prev, [msg.d.path]: msg.d.content }));
-        break;
     }
     if (displayMsg) {
       setMessages(prev => [...prev, displayMsg]);
@@ -98,9 +79,9 @@ export default function Home() {
   };
 
   const handleSendMessage = (prompt: string) => {
-    if (socket && isConnected) {
+    if (isConnected) {
       const messageToSend = { prompt };
-      socket.send(JSON.stringify(messageToSend));
+      sendMessage(JSON.stringify(messageToSend));
       setMessages(prev => [...prev, { source: 'user', content: prompt, type: 'text' }]);
     }
   };
@@ -116,8 +97,15 @@ export default function Home() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         terminalLogs={terminalLogs}
-        files={files}
       />
     </main>
+  );
+}
+
+export default function Home() {
+  return (
+    <WebSocketProvider>
+      <ChatPage />
+    </WebSocketProvider>
   );
 }

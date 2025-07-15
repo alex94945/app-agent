@@ -3,6 +3,7 @@
 import logging
 import uuid
 import json
+import os
 import datetime
 from typing import Dict
 from uuid import UUID
@@ -26,6 +27,8 @@ from common.ws_messages import (
     TaskStartedData,
     TaskLogData,
     TaskFinishedData,
+    FileContentMessage,
+    InitialFilesLoadedMessage,
 )
 
 # Configure logging
@@ -143,6 +146,35 @@ async def agent_websocket(websocket: WebSocket):
 
             try:
                 data = json.loads(raw_data)
+                message_type = data.get("t")
+
+                if message_type == "request_initial_files":
+                    logger.info("Received request for initial files. Streaming workspace content.")
+                    workspace_dir = settings.REPO_DIR
+                    for root, _, files in os.walk(workspace_dir):
+                        for filename in files:
+                            # Skip files in .git directory
+                            if '.git' in root.split(os.sep):
+                                continue
+                            
+                            filepath = os.path.join(root, filename)
+                            rel_path = os.path.relpath(filepath, workspace_dir)
+
+                            try:
+                                with open(filepath, 'r', encoding='utf-8') as f:
+                                    content = f.read()
+                                await websocket.send_text(
+                                    FileContentMessage(d={"path": rel_path, "content": content}).model_dump_json()
+                                )
+                            except (IOError, UnicodeDecodeError) as e:
+                                logger.warning(f"Could not read or send file {rel_path}: {e}")
+
+                    await websocket.send_text(
+                        InitialFilesLoadedMessage(d=None).model_dump_json()
+                    )
+                    logger.info("Finished streaming initial files.")
+                    continue # Wait for the next message
+
                 prompt = data.get("prompt", "No prompt provided")
                 logger.info(f"Received prompt: '{prompt}' for thread '{thread_id}'")
                 messages.append(HumanMessage(content=prompt))
@@ -227,9 +259,10 @@ async def agent_websocket(websocket: WebSocket):
         logger.info("WebSocket connection closed.")
     except Exception as e:
         logger.error(
-            f"An unexpected error occurred in the WebSocket: {e}", exc_info=True
+            f"An unexpected error occurred: {e}", exc_info=True
         )
-        # Attempt to send an error message before closing
+        # Ensure the websocket is closed on error
+        await websocket.close(code=1011)
         try:
             await websocket.send_text(
                 ErrorMessage(d="An internal server error occurred.").model_dump_json()
