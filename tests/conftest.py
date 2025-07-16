@@ -47,7 +47,6 @@ from unittest.mock import patch
 from fastmcp import Client, FastMCP
 from pydantic import BaseModel, Field
 from mcp.shared.exceptions import McpError, ErrorData
-from langgraph.graph.graph import CompiledGraph
 
 # Custom MCP Error Codes (integers)
 RESOURCE_NOT_FOUND_CODE = -32010
@@ -88,6 +87,13 @@ def agent_graph_fixture():
     return factory
 
 
+@pytest.fixture
+def fix_cycle_tracker():
+    """Provides a default FixCycleTracker instance for tests."""
+    from agent.executor.fix_cycle import FixCycleTracker
+    return FixCycleTracker()
+
+
 # --- Pydantic Schemas for Tool Outputs ---
 
 class _ShellRunOutput(BaseModel):
@@ -98,6 +104,13 @@ class _ShellRunOutput(BaseModel):
 class _DirEntry(BaseModel):
     name: str
     type: str  # "file" or "directory"
+
+
+# --- Pytest Plugins --- 
+
+# This was moved from tests/integration/conftest.py to fix a pytest collection error.
+# It ensures that integration-specific fixtures are loaded correctly.
+pytest_plugins = ["tests.integration.pytest_plugins"]
 
 # --- FastMCP Server for File I/O Tools ---
 
