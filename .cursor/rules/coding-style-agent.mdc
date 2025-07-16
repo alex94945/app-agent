@@ -1,0 +1,17 @@
+---
+globs: *agent/*
+alwaysApply: false
+---
+- Follow **PEP 8** for naming, spacing, and imports (auto-format with **Black** at 88-char lines).
+- Use **type hints** everywhere and prefer **dataclasses** for simple data carriers.
+- Keep functions ≤ 40 LOC; one public class per file; prefer composition over inheritance (Google style §3).
+- Default to **async def** in tool wrappers and network I/O; gate concurrency with `asyncio.Semaphore(20)` to avoid rate-limit bursts.
+- Configure settings with **Pydantic Settings**; no hard-coded secrets—read from environment or `.env`.
+- Organise agent code under `agent/`:
+  - `agent/agent_graph.py` – LangGraph graph build
+  - `agent/tools/**/*.py` – tool functions (each `@tool` in its own file)
+  - `agent/state.py` – `@dataclass` for LangGraph state
+  - `agent/utils/` – shared helpers
+- Tests live in `tests/agent/**` and use **Pytest** fixtures + `pytest-asyncio`.
+- Document public functions with **Google-style docstrings** (`Args`, `Returns`, `Raises`).
+- When writing new features, debugging errors, or fixing bugs, perform web searches to review the latest documentation for relevant packages (especially MCP, LangChain, and other newer packages that get updated often).

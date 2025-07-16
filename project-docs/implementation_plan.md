@@ -12,6 +12,31 @@
 
 ---
 
+### **Phase 0.5: Template-Based Project Initialization (New!)**
+
+-   [ ] **1. Template Initialization Tool:**
+    -   [ ] Action: Implement `template_init` as a FastMCP tool in `agent/tools/template_init.py`.
+    -   [ ] Details:
+        -   [ ] Accepts `project_name` (or path) and `template_name` (default: `nextjs-base`).
+        -   [ ] Copies `templates/<template_name>` to the workspace as `<project_name>`.
+        -   [ ] Returns the destination path.
+        -   [ ] Fully testable via in-memory FastMCP server tests.
+
+-   [ ] **2. Deterministic Orchestration:**
+    -   [ ] Action: Orchestrator (not planner LLM) always calls `template_init` tool as the very first step.
+    -   [ ] Details:
+        -   [ ] The returned project path is set in agent state for all subsequent tool calls.
+
+-   [ ] **3. Live Preview Integration:**
+    -   [ ] Action: Orchestrator starts the dev server (e.g., `npm run dev`) in the initialized project directory and opens a browser preview (e.g., `http://localhost:3000`).
+    -   [ ] Details:
+        -   [ ] The initialized project is visible in the @ui/ live app preview pane before agent editing begins.
+
+-   [ ] **4. Agent Editing:**
+    -   [ ] Action: Planner/agent receives the initialized project path and edits files in response to user prompts using patch/file-I-O tools.
+
+---
+
 ### **Phase 0: Project Setup, Configuration & FastAPI Gateway Skeleton**
 
 **(Corresponds to Design Doc MVP Phase 0, with enhancements)**
@@ -145,7 +170,7 @@
 
 -   [x] **0. Cleanup & Refactoring:**
     -   [x] Action: Abstract prompts into their own folder.
-    -   [x] Files: `agent/agent_graph.py`, `agent/prompts/initial_scaffold.py`, `agent/prompts/__init__.py`
+    -   [x] Files: `agent/agent_graph.py`, `agent/prompts/template_init.py`, `agent/prompts/__init__.py`
 
 -   [x] **1. LSP Integration (TypeScript Language Server):**
     -   [x] Action: Replace LSP stubs with real `pygls` client calls.
@@ -202,34 +227,21 @@
 
 ### **Phase 2.5: Refactor `tool_executor_step` in `agent/agent_graph.py`**
 
-- [x] **Refactor `tool_executor_step` for clarity, testability, and maintainability.**
-    - [x] Step 1: Extract pure helper functions:
-        - [x] `parse_tool_calls(message: AIMessage) -> list[ToolCall]`
-        - [x] `maybe_inject_subdir(args: dict, tool_name: str, state: AgentState) -> dict`
-    - [x] Step 2: Introduce `FixCycleTracker` dataclass:
-        - [x] Define `FixCycleTracker` in `agent/executor/fix_cycle.py`.
-        - [x] Implement `record_result` and `needs_verification` methods.
-        - [x] Write comprehensive unit tests for `FixCycleTracker` mirroring current edge-cases (increment vs. reset logic for attempts, conditions for needing verification).
-    - [x] Step 3: Replace output handling ladder with an `OUTPUT_HANDLERS` registry:
-        - [x] Create `agent/executor/output_handlers.py`.
-        - [x] Define `is_tool_successful(tool_output: Any) -> bool` using a registry.
-        - [x] Define `format_tool_output(tool_output: Any) -> str` using a similar registry or integrate into the success handlers.
-        - [x] Start with handlers for `RunShellOutput`, `WriteFileOutput`, `ApplyPatchOutput`, and a fallback.
-    - [x] Step 4: Rewrite main `tool_executor_step` loop:
-        - [x] Create `agent/executor/runner.py` for `async def run_single_tool(call: ToolCall, state: AgentState, tool_map: dict) -> Any`.
-        - [x] Create `agent/executor/executor.py` for the new `async def tool_executor_step(state: AgentState) -> dict`.
-        -   [x] The new `tool_executor_step` will use `parse_tool_calls`, `FixCycleTracker`, `run_single_tool`, `is_tool_successful`, and `format_tool_output`.
-        -   [x] Keep the old `tool_executor_step` in `agent/agent_graph.py` alongside the new one (e.g., `_tool_executor_step_legacy`), selectable via a temporary flag or by commenting out, until all tests pass with the new implementation.
-        -   [x] Update `agent_graph.py` to import and use the new `tool_executor_step` from `agent.executor.executor`.
-    - [x] Step 5: Clean up and finalize:
-        - [x] Delete dead logs and duplicate assignments identified in the original `tool_executor_step`.
-        - [x] Once the new implementation is stable and all tests pass, remove the legacy `_tool_executor_step_legacy`.
-        - [x] Ensure all relevant imports are updated and old ones removed.
-    - [x] Update `architecture.md` to reflect the new `agent/executor/` module structure.
+- [ ] **Refactor `tool_executor_step` for clarity, testability, and maintainability.**
+    - [x] Step 1: Extract pure helper functions.
+    - [x] Step 2: Introduce `FixCycleTracker` dataclass in `agent/executor/fix_cycle.py`.
+    - [x] Step 3: Replace output handling with an `OUTPUT_HANDLERS` registry in `agent/executor/output_handlers.py`.
+    - [ ] Step 4: Rewrite main `tool_executor_step` loop:
+        - [x] Create `agent/executor/runner.py` for `run_single_tool`.
+        - [x] Create `agent/executor/executor.py` for the new `tool_executor_step`.
+        - [ ] Integrate the new executor into `agent_graph.py`.
+        - [ ] **Note:** This refactor is in progress. The new executor and helper modules are created, but the agent graph still uses the legacy executor.
+    - [ ] Step 5: Clean up and finalize legacy code.
+    - [ ] Update `architecture.md` to reflect the new `agent/executor/` module structure.
 
 ---
 
-### **Phase 3: PTY Streaming for Real-Time Scaffolding**
+### **Phase 3: PTY Streaming for Real-Time Template Initialization**
 
 **(Corresponds to Design Doc v2: PTY-Streaming)**
 
@@ -283,7 +295,7 @@
         -   [x] Gateway reads all files from `REPO_DIR` and streams them to the UI using a `file_content` message type.
         -   [x] UI collects streamed files into a `FileSystemTree`.
         -   [x] On receiving an `initial_files_loaded` signal, the UI boots the WebContainer, mounts the files, runs `npm install` and `npm run dev`, and embeds the preview URL in an iframe.
-    -   [x] Testing: Verified that the template Next.js app boots successfully in the preview iframe on startup.
+    -   [] Testing: Verified that the template Next.js app boots successfully in the preview iframe on startup.
 
 -   [ ] **3. Real-Time File Synchronization**
     -   [ ] Action: Connect the agent's file operations to the running WebContainer for live updates.
@@ -293,6 +305,19 @@
         -   [ ] The UI will receive the `file_update` message and use `webcontainer.fs.writeFile()` to update the file in the running sandbox.
         -   [ ] WebContainer's Hot Module Replacement (HMR) should automatically refresh the preview iframe.
     -   [ ] Testing: Agent creates `app/page.tsx` -> appears in iframe. Agent patches `app/page.tsx` -> iframe updates instantly.
+
+---
+
+### **Phase 3.5: Codebase Embedding & Indexing (Planned Enhancement)**
+
+-   [ ] **Codebase Embedding & Indexing**
+    -   [ ] Action: Implement a workflow to ingest all code/doc files into the vector store and keep embeddings up to date as files change.
+    -   [ ] Files: `tools/vector_store_tools.py`, `agent/agent_graph.py`
+    -   [ ] Details:
+        -   [ ] On project load or after major file changes, call `add_texts()` on code/doc files to generate/update embeddings.
+        -   [ ] After any tool (e.g., `write_file`, `apply_patch`) that changes code, re-embed and update the affected files in the vector store.
+        -   [ ] Optionally, expose a tool for manual reindexing ("refresh embeddings").
+    -   [ ] Testing: Confirm that vector search results reflect the current codebase after changes.
 
 ---
 
@@ -325,3 +350,5 @@
 **Future-proofing Note:**
 > To ensure reliable imports for all contributors and CI, plan to migrate the codebase to a `src/` layout (placing all source code in a `src/` directory) or support editable installs (`pip install -e .`). This will eliminate the need for contributors to set `PYTHONPATH` manually and is considered best practice for modern Python projects.
 > Look into reducing 429 errors by trimming token costs.
+
+---

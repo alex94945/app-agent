@@ -11,7 +11,7 @@ from agent.pty.manager import get_pty_manager
 
 # Import all necessary tools directly
 from tools.file_io_mcp_tools import read_file, write_file
-from tools.scaffold_tool import scaffold_project
+
 from tools.shell_mcp_tools import run_shell, PTYTask
 from tools.patch_tools import apply_patch
 from tools.vector_store_tools import vector_search
@@ -23,7 +23,6 @@ from tools.diagnostics_tools import get_diagnostics, diagnose
 ALL_TOOLS_LIST = [
     read_file,
     write_file,
-    scaffold_project,
     run_shell,
     apply_patch,
     vector_search,

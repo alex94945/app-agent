@@ -3,7 +3,7 @@ import asyncio
 from unittest.mock import patch
 
 # Import the tool functions and the helper from conftest
-from tools.file_io_mcp_tools import read_file, write_file, WriteFileOutput
+from tools.file_io_mcp_tools import read_file, write_file
 from tests.conftest import mock_mcp_session_cm
 
 # All tests are async
@@ -63,12 +63,13 @@ async def test_write_file_success(file_io_client, tmp_path, monkeypatch):
             }
         )
 
-    # 3. Assertions: Check the tool's return value and the file on disk
-    assert isinstance(result, WriteFileOutput)
-    assert result.ok is True
-    assert result.path == relative_path
-    assert f"Successfully wrote {len(content_to_write)} bytes" in result.message
-    assert await asyncio.to_thread(output_file_path.read_text) == content_to_write
+    # 3. Assertions: Check if the content was written and the output is correct
+    assert isinstance(result, str)
+    assert "successfully" in result.lower()
+
+    # Verify the file content on disk
+    written_content = await asyncio.to_thread(output_file_path.read_text)
+    assert written_content == content_to_write
 
 
 async def test_write_file_mcp_error_is_a_directory(file_io_client, tmp_path, monkeypatch):
@@ -90,9 +91,7 @@ async def test_write_file_mcp_error_is_a_directory(file_io_client, tmp_path, mon
             }
         )
 
-    # 3. Assertions: Check for the formatted error object
-    assert isinstance(result, WriteFileOutput)
-    assert result.ok is False
-    assert result.path == relative_path
-    assert 'MCP Error' in result.message
-    assert 'Is a directory' in result.message
+    # 3. Assertions: Check for the formatted error string
+    assert isinstance(result, str)
+    assert 'MCP Error' in result
+    assert 'Is a directory' in result

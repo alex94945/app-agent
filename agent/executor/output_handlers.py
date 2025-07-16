@@ -1,11 +1,9 @@
-from typing import Any, Callable, Protocol, Type, Union, Optional
+from typing import Any, Callable, Protocol, Type, Union, Optional, Dict
 from pydantic import BaseModel
+import json
 
 # --- Tool Output Model Imports ---
-# Importing actual Pydantic models from their respective tool definition files.
-
 from tools.shell_mcp_tools import RunShellOutput
-
 from tools.patch_tools import ApplyPatchOutput
 
 # --- Output Handler Protocol & Implementations ---
@@ -19,32 +17,28 @@ class OutputHandler(Protocol):
     def format_output(self, output: Any) -> str:
         ...
 
-
 class DefaultOutputHandler(OutputHandler):
     """Fallback handler for unknown or simple output types."""
     def is_successful(self, output: Any) -> bool:
-        # By default, assume success if no specific handler exists.
-        # This might need adjustment based on how 'success' is typically indicated.
         if hasattr(output, 'success'):
             return bool(output.success)
-        if hasattr(output, 'ok'): # Another common pattern
+        if hasattr(output, 'ok'):
             return bool(output.ok)
-        # If it's a simple type or no success attribute, assume success.
-        # This is a basic fallback; specific handlers are preferred.
         if isinstance(output, (str, int, float, bool, list, dict, type(None))):
-            return True 
-        return False # For unknown complex objects without a success flag
+            return True
+        return False
 
     def format_output(self, output: Any) -> str:
         if isinstance(output, BaseModel):
             return output.model_dump_json(indent=2)
         elif isinstance(output, (list, dict)):
-            import json
             try:
                 return json.dumps(output, indent=2)
             except TypeError:
-                return str(output) # Fallback for non-serializable dicts/lists
+                return str(output)
         return str(output)
+
+
 
 
 class RunShellOutputHandler(OutputHandler):
@@ -75,7 +69,7 @@ class ApplyPatchOutputHandler(OutputHandler):
         return output.message
 
 
-# --- Registry & Helper Functions ---
+# --- Helper Functions ---
 
 OUTPUT_HANDLERS: dict[Type, OutputHandler] = {
     RunShellOutput: RunShellOutputHandler(),
@@ -83,18 +77,19 @@ OUTPUT_HANDLERS: dict[Type, OutputHandler] = {
     # Add more handlers here as new tool output types are introduced
 }
 
-_default_handler = DefaultOutputHandler()
+DEFAULT_HANDLER = DefaultOutputHandler()
 
-def get_handler(output: Any) -> OutputHandler:
-    """Retrieves the appropriate handler for the given tool output type."""
-    return OUTPUT_HANDLERS.get(type(output), _default_handler)
+def get_output_handler(output: Any) -> OutputHandler:
+    """Gets the appropriate handler for a given tool output type."""
+    output_type = type(output)
+    return OUTPUT_HANDLERS.get(output_type, DEFAULT_HANDLER)
 
 def is_tool_successful(tool_output: Any) -> bool:
     """Determines if a tool execution was successful based on its output."""
-    handler = get_handler(tool_output)
+    handler = get_output_handler(tool_output)
     return handler.is_successful(tool_output)
 
 def format_tool_output(tool_output: Any) -> str:
     """Formats the tool output into a string suitable for LLM consumption or logging."""
-    handler = get_handler(tool_output)
+    handler = get_output_handler(tool_output)
     return handler.format_output(tool_output)

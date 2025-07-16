@@ -10,9 +10,14 @@ from uuid import UUID
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from langchain_core.messages import HumanMessage, AIMessage
+import asyncio
+import re
+
+from common.ws_messages import BrowserPreviewData, BrowserPreviewMessage
 
 from agent.agent_graph import compile_agent_graph
 from agent.pty.manager import get_pty_manager
+from tools.template_init import template_init
 from agent.state import AgentState
 from common.config import settings, PROJECT_ROOT
 from common.ws_messages import (
@@ -84,59 +89,100 @@ async def agent_websocket(websocket: WebSocket):
     """
     await websocket.accept()
     logger.info("WebSocket connection accepted. Sending initial greeting.")
-    
+
+    pty_manager = get_pty_manager()
+
     # Send initial greeting message from the agent
     initial_greeting = "Hello, I'm App Agent. Let me know if you'd like to brainstorm your idea, or get straight into building!"
     await websocket.send_text(FinalMessage(d=initial_greeting).model_dump_json())
-    logger.info("WebSocket connection accepted.")
+
+    # --- PTY Task Management ---
+    task_start_times: Dict[UUID, datetime.datetime] = {}
+
+    async def on_pty_started(task_id: UUID, name: str):
+        task_start_times[task_id] = datetime.datetime.now(datetime.timezone.utc)
+        await websocket.send_text(
+            TaskStartedMessage(
+                d=TaskStartedData(
+                    task_id=task_id,
+                    name=name,
+                    started_at=task_start_times[task_id]
+                )
+            ).model_dump_json()
+        )
+
+    preview_sent = False
+    async def on_pty_output(task_id: UUID, chunk: str):
+        nonlocal preview_sent
+        # Forward the log to the client
+        await websocket.send_text(
+            TaskLogMessage(d=TaskLogData(task_id=task_id, chunk=chunk)).model_dump_json()
+        )
+
+        # Check for the Next.js ready signal and send browser preview URL
+        if not preview_sent and ('ready in' in chunk.lower() or 'started server on' in chunk.lower()):
+            # Extract the URL from the log message
+            match = re.search(r'(https?://localhost:\d+)', chunk)
+            if match:
+                url = match.group(1)
+                logger.info(f"Dev server ready. Sending preview URL: {url}")
+                await websocket.send_text(
+                    BrowserPreviewMessage(
+                        d=BrowserPreviewData(url=url, title="Live App Preview")
+                    ).model_dump_json()
+                )
+                preview_sent = True
+
+    async def on_pty_complete(task_id: UUID, exit_code: int):
+        start_time = task_start_times.pop(task_id, datetime.datetime.now(datetime.timezone.utc))
+        duration_ms = (datetime.datetime.now(datetime.timezone.utc) - start_time).total_seconds() * 1000
+        await websocket.send_text(
+            TaskFinishedMessage(
+                d=TaskFinishedData(
+                    task_id=task_id,
+                    exit_code=exit_code,
+                    state="success" if exit_code == 0 else "error",
+                    duration_ms=duration_ms
+                )
+            ).model_dump_json()
+        )
+
+    pty_manager.set_callbacks({
+        "on_started": on_pty_started,
+        "on_output": on_pty_output,
+        "on_complete": on_pty_complete,
+    })
+
+    # --- Project Initialization Step ---
+    project_name = f"session-{uuid.uuid4()}"
+    try:
+        await websocket.send_text(TokenMessage(d="Initializing new project...").model_dump_json())
+        project_path = template_init.invoke({"project_name": project_name})
+        logger.info(f"Project '{project_name}' initialized at {project_path}")
+        await websocket.send_text(TokenMessage(d=f"Project '{project_name}' created. Starting dev server...").model_dump_json())
+
+        # Start the dev server
+        await pty_manager.spawn(
+            task_name="Next.js Dev Server",
+            command=["npm", "run", "dev"],
+            cwd=project_path,
+        )
+        # The browser_preview call is now handled by the on_pty_output callback.
+        # We'll add a small delay to ensure the dev server has a moment to start
+        # before we proceed to the agent loop.
+        await asyncio.sleep(2)  # Allow time for server to start
+
+    except Exception as e:
+        logger.error(f"Failed to initialize project or start dev server: {e}", exc_info=True)
+        await websocket.send_text(ErrorMessage(d=f"Error setting up project: {e}").model_dump_json())
+        await websocket.close(code=1011)
+        return
+
     try:
         # For now, we'll use a new "thread" for each connection.
         # Later, this could be tied to a user session.
         thread_id = str(uuid.uuid4())
         logger.info(f"Generated new thread_id for connection: {thread_id}")
-
-        pty_manager = get_pty_manager()
-
-        # --- PTY Task Management ---
-        task_start_times: Dict[UUID, datetime.datetime] = {}
-
-        async def on_pty_started(task_id: UUID, name: str):
-            task_start_times[task_id] = datetime.datetime.now(datetime.timezone.utc)
-            await websocket.send_text(
-                TaskStartedMessage(
-                    d=TaskStartedData(
-                        task_id=task_id,
-                        name=name,
-                        started_at=task_start_times[task_id]
-                    )
-                ).model_dump_json()
-            )
-
-        async def on_pty_output(task_id: UUID, chunk: str):
-            await websocket.send_text(
-                TaskLogMessage(d=TaskLogData(task_id=task_id, chunk=chunk)).model_dump_json()
-            )
-
-        async def on_pty_complete(task_id: UUID, exit_code: int):
-            start_time = task_start_times.pop(task_id, None)
-            duration_ms = (datetime.datetime.now(datetime.timezone.utc) - start_time).total_seconds() * 1000 if start_time else 0
-            await websocket.send_text(
-                TaskFinishedMessage(
-                    d=TaskFinishedData(
-                        task_id=task_id,
-                        exit_code=exit_code,
-                        state="success" if exit_code == 0 else "error",
-                        duration_ms=duration_ms,
-                    )
-                ).model_dump_json()
-            )
-
-        pty_callbacks = {
-            "on_started": on_pty_started,
-            "on_output": on_pty_output,
-            "on_complete": on_pty_complete,
-        }
-        pty_manager.set_callbacks(pty_callbacks)
 
         messages: list[HumanMessage | AIMessage] = []
 
@@ -271,8 +317,8 @@ async def agent_websocket(websocket: WebSocket):
             pass  # Ignore if sending fails
     finally:
         # Clean up the PTY callbacks for this session
-        pty_manager = get_pty_manager()
-        pty_manager.clear_callbacks()
+        if pty_manager:
+            pty_manager.clear_callbacks()
         logger.info("Closing WebSocket connection handler.")
 
 

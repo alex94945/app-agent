@@ -92,23 +92,18 @@ async def run_shell(
             # Normalize response for FastMCP ≥2.8 (CallToolResult) and older formats
             def _normalize_shell_run_result(raw):
                 """Return a dict with stdout/stderr/return_code keys."""
-                # Case 0: We already have the desired dict
+                # Modern fastmcp clients return a CallToolResult object.
+                if hasattr(raw, 'result'):
+                    raw = raw.result
+
+                # The result itself might be a Pydantic model.
+                if hasattr(raw, 'model_dump'):
+                    raw = raw.model_dump()
+
                 if isinstance(raw, dict) and {"stdout", "stderr", "return_code"}.issubset(raw.keys()):
                     return raw
 
-                # Case 1: New FastMCP BaseModel wrapper
-                if hasattr(raw, "model_dump"):
-                    raw_dict = raw.model_dump(exclude_none=True)
-                    if {"stdout", "stderr", "return_code"}.issubset(raw_dict.keys()):
-                        return raw_dict
-                    # If this is CallToolResult, drill down
-                    if "content" in raw_dict and isinstance(raw_dict["content"], list):
-                        raw = raw_dict["content"]
-                    else:
-                        logger.error("Unknown keys in model_dump result: %s", raw_dict.keys())
-                        raise McpError(ErrorData(code=-32003, message="Unexpected shell.run result format"))
-
-                # Case 2: List of TextContent
+                # Fallback for older formats (e.g., list of TextContent with JSON)
                 if isinstance(raw, list) and raw:
                     first = raw[0]
                     try:
@@ -120,7 +115,7 @@ async def run_shell(
                         logger.error("Failed to decode TextContent text as JSON: %s", e)
                         raise
 
-                # Unsupported format
+                # If we still haven't found the right format, raise an error.
                 logger.error("Unhandled shell.run result format: %s", type(raw))
                 raise McpError(ErrorData(code=-32003, message="Unexpected shell.run result format"))
 

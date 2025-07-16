@@ -85,3 +85,14 @@ class FileContentMessage(WsMessage):
 class InitialFilesLoadedMessage(WsMessage):
     t: Literal["initial_files_loaded"] = "initial_files_loaded"
     d: Optional[None] = None
+
+
+# --- Browser Preview Message ---
+
+class BrowserPreviewData(BaseModel):
+    url: str
+    name: str
+
+class BrowserPreviewMessage(WsMessage):
+    t: Literal["browser_preview"] = "browser_preview"
+    d: BrowserPreviewData

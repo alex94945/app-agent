@@ -2,13 +2,15 @@
 
 import logging
 import os
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 import uuid
-import pytest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from common.config import get_settings
+import pytest
 from langchain_core.messages import HumanMessage
+
+from agent.agent_graph import compile_agent_graph as build_state_graph
+from common.config import get_settings
 
 # --- Configure Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -45,8 +47,7 @@ async def test_scaffolding_smoke_test(agent_graph_fixture, monkeypatch, tmp_path
             prompt = "Create a new Next.js application called my-app."
             thread_id = f"smoke-test-{uuid.uuid4()}"
             logger.info(f"Running agent with prompt: '{prompt}'")
-            agent_graph = agent_graph_fixture()
-            final_state = await agent_graph.ainvoke(
+            final_state = await agent_graph_fixture.ainvoke(
                 {"messages": [HumanMessage(content=prompt)]},
                 config={"configurable": {"thread_id": thread_id}}
             )

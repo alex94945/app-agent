@@ -1,0 +1,8 @@
+---
+globs: *ui/*
+alwaysApply: false
+---
+- Strict TypeScript (`noImplicitAny`, `exactOptionalPropertyTypes`).
+- Functional components; no `class` components.
+- Prefer early returns; keep functions ≤ 20 LOC.
+- Run Prettier + ESLint before committing.

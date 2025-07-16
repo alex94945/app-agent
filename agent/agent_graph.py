@@ -35,7 +35,7 @@ from agent.state import AgentState
 from common.llm import get_llm_client
 from agent.models import PlannerOutput
 
-from agent.executor.output_handlers import format_tool_output
+from agent.executor.executor import tool_executor_step
 
 
 # Import all tools
@@ -46,9 +46,11 @@ from tools.patch_tools import apply_patch
 from tools.vector_store_tools import vector_search
 from tools.lsp_tools import lsp_definition, lsp_hover
 from tools.diagnostics_tools import get_diagnostics, diagnose
+from tools.template_init import template_init
 
 # List of all tools used by the agent
 ALL_TOOLS_LIST = [
+    template_init,
     read_file,
     write_file,
     run_shell,
@@ -106,36 +108,7 @@ def planner_reason_step(state: AgentState, llm: Optional[BaseChatModel] = None) 
     return {"messages": [ai_msg]}
 
 
-# --- Executor Node ---
-
-async def tool_executor_step(state: AgentState) -> dict:
-    """Executes the chosen tool with the provided arguments and returns the output."""
-    tool_call = state.messages[-1].tool_calls[0]
-    tool_name = tool_call['name']
-    tool_args = tool_call['args']
-    logger.info(f"[ToolExecutorStep] ENTRY | Tool: {tool_name} | Args: {tool_args} | Iteration: {state.iteration_count}")
-    tool = next((t for t in ALL_TOOLS_LIST if t.name == tool_name), None)
-    if tool is None:
-        error_message = f"Tool '{tool_name}' not found."
-        logger.error(f"[ToolExecutorStep] {error_message}")
-        return {"messages": [ToolMessage(content=error_message, tool_call_id=tool_call['id'])]}
-    try:
-        if hasattr(tool, 'ainvoke'):
-            logger.info(f"[ToolExecutorStep] Invoking async tool '{tool_name}'...")
-            output = await tool.ainvoke(tool_args)
-        else:
-            logger.info(f"[ToolExecutorStep] Invoking sync tool '{tool_name}' in thread...")
-            output = await asyncio.to_thread(tool.invoke, tool_args)
-        logger.info(f"[ToolExecutorStep] Tool '{tool_name}' output: {output}")
-    except Exception as e:
-        error_message = f"Error executing tool {tool_name}: {e}"
-        logger.error(f"[ToolExecutorStep] {error_message}", exc_info=True)
-        return {"messages": [ToolMessage(content=error_message, tool_call_id=tool_call['id'])]}
-    output_content = format_tool_output(output)
-    logger.info(f"[ToolExecutorStep] EXIT | Tool: {tool_name} | OutputContent: {output_content}")
-    return {
-        "messages": [ToolMessage(content=output_content, tool_call_id=tool_call['id'])]
-    }
+# The tool_executor_step is now imported from agent.executor.executor
 
 
 # --- Control Flow and Graph Definition ---

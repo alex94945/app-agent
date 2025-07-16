@@ -3,73 +3,39 @@ import json
 from pydantic import BaseModel
 
 from agent.executor.output_handlers import (
-    is_tool_successful,
-    format_tool_output,
-    get_handler,
+    get_output_handler,
     DefaultOutputHandler,
     RunShellOutputHandler,
-    WriteFileOutputHandler,
     ApplyPatchOutputHandler,
-    OUTPUT_HANDLERS
 )
 from tools.shell_mcp_tools import RunShellOutput
-from tools.file_io_mcp_tools import WriteFileOutput
 from tools.patch_tools import ApplyPatchOutput
 
-
-# --- Test Data ---
-
-@pytest.fixture
-def mock_run_shell_output_success():
-    return RunShellOutput(
-        ok=True,
-        return_code=0,
-        stdout="Command output",
-        stderr="",
-        command_executed="ls -l"
-    )
+# --- Test Data Fixtures ---
 
 @pytest.fixture
-def mock_run_shell_output_failure():
-    return RunShellOutput(
-        ok=False,
-        return_code=1,
-        stdout="",
-        stderr="Error occurred",
-        command_executed="bad_command"
-    )
+def run_shell_success():
+    return RunShellOutput(ok=True, return_code=0, stdout="Success", stderr="", command_executed="echo success")
 
 @pytest.fixture
-def mock_write_file_output_success():
-    return WriteFileOutput(
-        ok=True,
-        path="/path/to/file.txt",
-        message="File written successfully."
-    )
+def run_shell_failure():
+    return RunShellOutput(ok=False, return_code=1, stdout="", stderr="Error", command_executed="ls non_existent_file")
 
 @pytest.fixture
-def mock_write_file_output_failure():
-    return WriteFileOutput(
-        ok=False,
-        path="/path/to/file.txt",
-        message="Failed to write file."
-    )
+def apply_patch_success():
+    return ApplyPatchOutput(ok=True, message="Patch applied")
 
 @pytest.fixture
-def mock_apply_patch_output_success():
-    return ApplyPatchOutput(
-        ok=True,
-        file_path_hint="file.py",
-        message="Patch applied successfully.",
-        details=None
-    )
+def apply_patch_failure():
+    return ApplyPatchOutput(ok=False, message="Patch failed")
 
-@pytest.fixture
-def mock_apply_patch_output_failure():
-    return ApplyPatchOutput(
-        ok=False,
-        message="Patch application failed: git error"
-    )
+class UnknownOutputWithSuccess(BaseModel):
+    success: bool
+    data: str
+
+class UnknownOutputWithOk(BaseModel):
+    ok: bool
+    info: str
 
 class UnknownOutput(BaseModel):
     data: str
@@ -80,77 +46,48 @@ class SuccessAttributeOutput(BaseModel):
 
 class OkAttributeOutput(BaseModel):
     ok: bool
-    info: str
+    data: str
 
-# --- Test Cases ---
+class PlainOldObject:
+    pass
 
-# Test get_handler
-def test_get_handler_specific_types():
-    assert isinstance(get_handler(RunShellOutput(ok=True, return_code=0, stdout="", stderr="", command_executed="")), RunShellOutputHandler)
-    assert isinstance(get_handler(WriteFileOutput(ok=True, path="", message="")), WriteFileOutputHandler)
-    assert isinstance(get_handler(ApplyPatchOutput(ok=True, file_path_hint="", message="")), ApplyPatchOutputHandler)
+# --- Handler Resolution Tests ---
 
-def test_get_handler_default():
-    assert isinstance(get_handler("just a string"), DefaultOutputHandler)
-    assert isinstance(get_handler(UnknownOutput(data="test")), DefaultOutputHandler)
+def test_get_output_handler_resolves_correctly():
+    """Verify that get_output_handler returns the correct handler for each type."""
+    assert isinstance(get_output_handler(RunShellOutput(ok=True, return_code=0, stdout="", stderr="", command_executed="test")), RunShellOutputHandler)
+    assert isinstance(get_output_handler(ApplyPatchOutput(ok=True, message="")), ApplyPatchOutputHandler)
+    assert isinstance(get_output_handler("a string"), DefaultOutputHandler)
+    assert isinstance(get_output_handler({"key": "value"}), DefaultOutputHandler)
+    assert isinstance(get_output_handler(PlainOldObject()), DefaultOutputHandler)
 
-# Test is_tool_successful
+# --- Handler Logic Tests ---
 
-def test_is_tool_successful_run_shell(mock_run_shell_output_success, mock_run_shell_output_failure):
-    assert is_tool_successful(mock_run_shell_output_success) is True
-    assert is_tool_successful(mock_run_shell_output_failure) is False
+def test_run_shell_handler(run_shell_success, run_shell_failure):
+    """Test the RunShellOutputHandler's success logic."""
+    handler = RunShellOutputHandler()
+    assert handler.is_successful(run_shell_success) is True
+    assert handler.is_successful(run_shell_failure) is False
 
-def test_is_tool_successful_write_file(mock_write_file_output_success, mock_write_file_output_failure):
-    assert is_tool_successful(mock_write_file_output_success) is True
-    assert is_tool_successful(mock_write_file_output_failure) is False
+def test_apply_patch_handler(apply_patch_success, apply_patch_failure):
+    """Test the ApplyPatchOutputHandler's success logic."""
+    handler = ApplyPatchOutputHandler()
+    assert handler.is_successful(apply_patch_success) is True
+    assert handler.is_successful(apply_patch_failure) is False
 
-def test_is_tool_successful_apply_patch(mock_apply_patch_output_success, mock_apply_patch_output_failure):
-    assert is_tool_successful(mock_apply_patch_output_success) is True
-    assert is_tool_successful(mock_apply_patch_output_failure) is False
 
-# Test format_tool_output
 
-def test_format_tool_output_run_shell_success(mock_run_shell_output_success):
-    formatted = format_tool_output(mock_run_shell_output_success)
-    assert "Command 'ls -l' executed successfully." in formatted
-    assert "Stdout:\nCommand output" in formatted
-    assert "Stderr:" not in formatted # No stderr for success
 
-def test_format_tool_output_run_shell_success_no_stdout():
-    output = RunShellOutput(ok=True, return_code=0, stdout="  ", stderr="", command_executed="echo 'hello'")
-    formatted = format_tool_output(output)
-    assert "Command 'echo 'hello'' executed successfully." == formatted # No stdout if it's blank
-
-def test_format_tool_output_run_shell_failure(mock_run_shell_output_failure):
-    formatted = format_tool_output(mock_run_shell_output_failure)
-    assert "Command 'bad_command' failed with return code 1." in formatted
-    assert "Stderr:\nError occurred" in formatted
-    assert "Stdout:" not in formatted # No stdout for this failure case
-
-def test_format_tool_output_write_file(mock_write_file_output_success, mock_write_file_output_failure):
-    assert format_tool_output(mock_write_file_output_success) == "File written successfully."
-    assert format_tool_output(mock_write_file_output_failure) == "Failed to write file."
-
-def test_format_tool_output_apply_patch_success(mock_apply_patch_output_success):
-    assert format_tool_output(mock_apply_patch_output_success) == "Patch applied successfully."
-
-def test_format_tool_output_apply_patch_failure(mock_apply_patch_output_failure):
-    formatted = format_tool_output(mock_apply_patch_output_failure)
-    assert formatted == "Patch application failed: git error"
-
-def test_format_tool_output_apply_patch_failure_no_details_stderr(mock_apply_patch_output_failure):
-    formatted = format_tool_output(mock_apply_patch_output_failure)
-    assert formatted == "Patch application failed: git error"
 
 # Test DefaultOutputHandler directly
 
 @pytest.mark.parametrize(
     "output_obj, expected_success",
     [
-        (SuccessAttributeOutput(success=True, info="yes"), True),
-        (SuccessAttributeOutput(success=False, info="no"), False),
-        (OkAttributeOutput(ok=True, info="yes"), True),
-        (OkAttributeOutput(ok=False, info="no"), False),
+        (UnknownOutputWithSuccess(success=True, data="y"), True),
+        (UnknownOutputWithSuccess(success=False, data="n"), False),
+        (UnknownOutputWithOk(ok=True, info="y"), True),
+        (UnknownOutputWithOk(ok=False, info="n"), False),
         ("a string", True), # Simple types assumed successful by default
         (123, True),
         (True, True),

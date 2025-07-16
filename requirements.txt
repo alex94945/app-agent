@@ -10,7 +10,7 @@ pydantic-settings~=2.9
 
 ######## AI / LangGraph ########
 openai~=1.84              # pure-Python, 3.13-safe, using a more recent version
-langgraph~=0.4            # Using a recent, stable version line
+langgraph~=0.5.3            
 langchain-core~=0.3
 langchain-openai~=0.3
 langchain-community~=0.3
@@ -29,7 +29,7 @@ python-multipart~=0.0.20        # pure-Python
 
 ######## Dev / QA ########
 black==25.1.0                   # formatter pins for deterministic CI, recent stable
-uvloop==0.19.0
+uvloop>=0.19.0
 ruff==0.11.1                   # linter / import-sorter, recent stable
 psutil==5.9.8
 mypy==1.16.0                    # better support for 3.13

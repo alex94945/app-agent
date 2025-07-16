@@ -8,9 +8,10 @@ from mcp.shared.exceptions import McpError, ErrorData
 from contextlib import asynccontextmanager # Added for mocking context
 
 @pytest.mark.asyncio
-async def test_run_shell_success(shell_client): # Use shell_client fixture
+async def test_run_shell_success(shell_client, tmp_path, monkeypatch):
     """Tests that run_shell successfully executes a command and returns the result."""
-    # 1. No Mocks needed for ClientSession or streamablehttp_client directly here
+    # 1. Setup: Configure the repository directory for this test
+    monkeypatch.setattr('common.config.settings.REPO_DIR', tmp_path)
 
     # Create an async context manager that yields the shell_client
     @asynccontextmanager
@@ -18,16 +19,25 @@ async def test_run_shell_success(shell_client): # Use shell_client fixture
         yield shell_client
 
     # 2. Call Tool by invoking the run_shell wrapper
-    # Patch open_mcp_session within the scope of tools.shell_mcp_tools
+    # Mock the behavior of the session's call_tool method
+    shell_client.call_tool = AsyncMock(return_value={
+        "stdout": "hello world\n",
+        "stderr": "",
+        "return_code": 0
+    })
+
+    # Patch open_mcp_session to use our mocked client
     with patch('tools.shell_mcp_tools.open_mcp_session', return_value=mock_open_mcp_session_ctx()):
         result = await run_shell.ainvoke({"command": "echo 'hello world'"})
-    
+
     # 3. Assertions
-    # The shell_client made the actual call to the in-memory server.
-    # We assert the output of the run_shell wrapper function.
+    shell_client.call_tool.assert_awaited_once_with(
+        "shell.run", 
+        arguments={'command': "echo 'hello world'", 'cwd': str(tmp_path)}
+    )
     assert result.ok is True
     assert result.return_code == 0
-    assert result.stdout == "hello world" # Server-side tool strips output
+    assert result.stdout == "hello world\n"
     assert result.stderr == ""
     assert result.command_executed == "echo 'hello world'"
 
@@ -40,17 +50,22 @@ async def test_run_shell_command_failure(shell_client): # Use shell_client fixtu
     async def mock_open_mcp_session_ctx():
         yield shell_client
 
+    # Mock the behavior of the session's call_tool method for a failed command
+    shell_client.call_tool = AsyncMock(return_value={
+        "stdout": "",
+        "stderr": "ls: cannot access 'non_existent_file': No such file or directory",
+        "return_code": 2
+    })
+
     # 2. Call Tool by invoking the run_shell wrapper
     with patch('tools.shell_mcp_tools.open_mcp_session', return_value=mock_open_mcp_session_ctx()):
         result = await run_shell.ainvoke({"command": "ls non_existent_file"})
-    
+
     # 3. Assertions
-    assert result.ok is False # Command failed
-    assert result.return_code != 0 # Specific code depends on OS/shell
+    assert result.ok is False
+    assert result.return_code == 2
     assert result.stdout == ""
-    # The exact error message can vary. Check for key parts.
-    assert "non_existent_file" in result.stderr 
-    assert "No such file or directory" in result.stderr or "cannot access" in result.stderr # Common error phrases
+    assert "No such file or directory" in result.stderr
     assert result.command_executed == "ls non_existent_file"
 
 @pytest.mark.asyncio

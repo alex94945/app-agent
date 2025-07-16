@@ -78,7 +78,7 @@ async def test_live_full_e2e(live_e2e_repo_dir: Path, prompt: str, live_mcp_clie
         shutil.rmtree(workspace_path) # Redundant given tmp_path, but safe
     workspace_path.mkdir()
 
-    # --- Pre-scaffold the project ---
+    # --- Pre-initialize project from template ---
     template_dir = Path(__file__).parent.parent.parent / "templates" / "nextjs-base"
     if not template_dir.is_dir():
         pytest.fail(f"Base template not found at {template_dir}. Please run 'npx create-next-app' to create it.")

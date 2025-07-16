@@ -1,0 +1,9 @@
+---
+alwaysApply: true
+---
+- Re-read each file in project-docs/ at the start of every new conversation.
+- Check implementation_plan.md for progress and remember to keep it up to date as we work.
+- If we discuss features or subtasks that are not included in implementation_plan.md suggest we update the file.
+- At times, it may also make sense to generate individual one-off design or technical architecture files for large features.
+- Keep the architecture **agent-centric**: one planner LLM chooses which tool to call (`run_shell`, `apply_patch`, `get_diagnostics`, etc.). Do **not** add unnecessary LangGraph nodes (e.g. just for error-handling; surface errors as tool output and let the planner decide the next step).
+- Search for and view source code of 3rd party packages to confirm correct utilization and assist in debugging tests.

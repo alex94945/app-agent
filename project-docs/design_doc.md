@@ -61,8 +61,8 @@ Modern assistants outperform legacy “prompt graph” systems by giving a large
 \### 6 End‑to‑End User Flow
 
 1. **Prompt** → FastAPI forwards to LangGraph.
-2. **Plan**: agent decides to scaffold, install, run dev.
-3. **Scaffold**: `run_shell('npx create-next-app …')`.
+2. **Plan**: agent decides to initialize from template, install, run dev.
+3. **Template Init**: Copy Next.js base template directory and configure as needed.
 4. **Dev server**: `run_shell('npm run dev')`; WebContainer iframe streams preview.
 5. **Diagnostics**: LSP `publishDiagnostics` arrive; agent patches via `apply_patch`.
 6. **Tests**: `run_shell('npm test')`; failures feed back into plan.
@@ -80,4 +80,4 @@ Modern assistants outperform legacy “prompt graph” systems by giving a large
 
 ---
 
-**Take‑away**: Expose a rich toolbelt, let the Python LangGraph agent plan freely, and use deterministic guard‑rails (lint, tests, diagnostics) to *augment*—not constrain—the LLM.  This yields a flexible, end‑to‑end coding partner that can scaffold, debug, and deploy a Next.js app with surprisingly little bespoke code.
+**Take‑away**: Expose a rich toolbelt, let the Python LangGraph agent plan freely, and use deterministic guard‑rails (lint, tests, diagnostics) to *augment*—not constrain—the LLM.  This yields a flexible, end‑to‑end coding partner that can initialize from a predefined template, debug, and deploy a Next.js app with surprisingly little bespoke code.

@@ -1,16 +1,16 @@
-# Design Doc — PTY‑Streaming for Real‑Time Scaffolding Progress
+# Design Doc — PTY‑Streaming for Real‑Time Template Initialization Progress
 
 ---
 
 ## Executive summary
 
-Moving long‑running scaffold commands (e.g., `npx create-next-app`) into a pseudo‑terminal (PTY) and streaming its output to both the UI and the agent removes race conditions and aligns us with SOTA agentic IDEs. This revision keeps the **Gateway** as a pure message bus and maintains backward compatibility in `run_shell`.
+Moving long‑running template initialization commands (e.g., `cp -r templates/nextjs-base my-app`) into a pseudo‑terminal (PTY) and streaming its output to both the UI and the agent removes race conditions and aligns us with SOTA agentic IDEs. This revision keeps the **Gateway** as a pure message bus and maintains backward compatibility in `run_shell`.
 
 ---
 
 ## 1 Problem statement
 
-Current background execution lets the agent proceed before scaffolding finishes, causing directory‑not‑found errors and leaving the user blind to progress.
+Current background execution lets the agent proceed before template initialization finishes, causing directory‑not‑found errors and leaving the user blind to progress.
 
 ---
 
@@ -29,7 +29,7 @@ Current background execution lets the agent proceed before scaffolding finishes,
 ### 3.1 Solution components
 
 * **Agent‑local await**. `tool_executor_step` now awaits an `asyncio.Event` provided by **PTYManager** instead of relying on the Gateway to inject synthetic messages.
-* **Backward‑compatible ****************************************`run_shell`****************************************.** `pty` defaults to `False`; when `True` it returns a `TaskHandle` (`{taskId, status: "started"}`).
+* **Backward‑compatible `run_shell`**. `pty` defaults to `False`; when `True` it returns a `TaskHandle` (`{taskId, status: "started"}`).
 * **Dedicated PTYManager module** (`agent/pty/manager.py`) owning spawn, stream, Task registry, cleanup.
 * **Semantic log parsing deferred**; the MVP streams raw log chunks only.
 
@@ -77,7 +77,7 @@ Dependencies added: `ptyprocess~=0.7`, `psutil~=7.0` (both CPython 3.13 wheels)
 ## 5 Agent flow changes
 
 ```python
-handle = run_shell(cmd="npx create-next-app", pty=True, task_name="scaffold")
+handle = run_shell(cmd="cp -r templates/nextjs-base my-app", pty=True, task_name="template_init")
 await PTY_MANAGER.wait_for_completion(handle["taskId"])
 # proceed with directory exploration
 ```
@@ -105,7 +105,7 @@ To avoid cluttering the main chat interface with verbose log output, the UI will
     *   **Content Panel** (right): Contains tabs for different views.
 *   **Tabs**: The content panel will feature at least two tabs:
     *   **Terminal**: A dedicated view that renders the real-time output of PTY tasks.
-    *   **Live App Preview**: An `iframe` that displays the live preview of the scaffolded web application.
+    *   **Live App Preview**: An `iframe` that displays the live preview of the template-initialized web application.
 *   **User Flow**:
     1.  When the agent initiates a PTY task, a concise message appears in the chat (e.g., `> Starting task: create-next-app`).
     2.  The UI automatically switches the Content Panel to the **Terminal** tab.
