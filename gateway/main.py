@@ -322,5 +322,17 @@ async def agent_websocket(websocket: WebSocket):
         logger.info("Closing WebSocket connection handler.")
 
 
+@app.on_event("startup")
+async def startup_event():
+    pass
+
+async def initialize_project(session_id: str, websocket: WebSocket):
+    """Initializes a new project directory and dev server."""
+    logger.info(f"Initializing new project for session: {session_id}")
+    await send_message("token", f"Initializing new project: {session_id}", websocket)
+    project_path = template_init.invoke({"session_id": session_id})
+    get_pty_manager().set_project_path(project_path)
+
+
 # To run this application:
 # uvicorn gateway.main:app --host 0.0.0.0 --port 8000 --reload
