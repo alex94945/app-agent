@@ -1,7 +1,8 @@
 ---
 alwaysApply: true
 ---
-- Re-read each file in project-docs/ at the start of every new conversation.
+- Re-read each file in project-docs/ at the start of every new conversation and provide a summary to ensure understanding.
+- Remember to use the tools available to you in your system prompt while debugging code and writing new features.
 - Check implementation_plan.md for progress and remember to keep it up to date as we work.
 - If we discuss features or subtasks that are not included in implementation_plan.md suggest we update the file.
 - At times, it may also make sense to generate individual one-off design or technical architecture files for large features.

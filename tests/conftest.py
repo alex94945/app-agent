@@ -70,21 +70,35 @@ async def mock_mcp_session_cm(client_to_yield: Client) -> AsyncIterator[Client]:
 
 
 @pytest.fixture(scope="session")
-
 def agent_graph_fixture():
     """
     Returns a factory that builds and compiles the agent graph with optional custom tools.
     Usage: agent_graph = agent_graph_fixture(tools=...) in tests.
     """
-    from agent.agent_graph import build_state_graph
-    def factory(tools=None):
-        if tools:
-            with patch('agent.agent_graph.all_tools_list', tools), \
-                 patch('agent.executor.runner.ALL_TOOLS_LIST', tools), \
-                 patch('agent.executor.runner.tool_map', {t.name: t for t in tools}):
-                return build_state_graph().compile()
-        return build_state_graph().compile()
-    return factory
+    from functools import partial
+    from agent.agent_graph import planner_reason_step, tool_executor_step, build_agent_graph
+
+    def _build_agent_graph_with_tools(tools: list) -> "StateGraph":
+        """
+        Builds the agent graph with a custom set of tools.
+        This replaces the default planner and tool executor with instrumented versions.
+        It's a bit of a hack, but it allows us to test the graph with a controlled
+        set of tools without rewriting the graph construction logic.
+        """
+        # Use functools.partial to create new functions with the 'tools_for_test'
+        # argument already filled in. This is the modern way to configure nodes
+        # without modifying them after they've been added to the graph.
+        mock_planner = partial(planner_reason_step, tools_for_test=tools)
+        mock_executor = partial(tool_executor_step, tools_for_test=tools)
+
+        # Build the graph, but replace the node functions with our partials.
+        # This is a bit of a workaround to avoid rewriting the graph builder.
+        graph = build_agent_graph()
+        graph.nodes['planner'] = mock_planner
+        graph.nodes['tool_executor'] = mock_executor
+        return graph
+
+    return _build_agent_graph_with_tools
 
 
 @pytest.fixture

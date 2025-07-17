@@ -9,8 +9,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langchain_core.messages import HumanMessage
 
-from agent.agent_graph import compile_agent_graph as build_state_graph
 from common.config import get_settings
+from agent.state import AgentState
+from tools.template_init import template_init
+from tools.shell_mcp_tools import run_shell
+
 
 # --- Configure Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -38,19 +41,24 @@ async def test_scaffolding_smoke_test(agent_graph_fixture, monkeypatch, tmp_path
         # The patch_client fixture is session-scoped, so we can't directly
         # use it here. Instead, we create a new client for our test server.
         from fastmcp import Client
-        from tests.integration.conftest import mcp_server
-        
-        async with Client(mcp_server) as client:
-            mock_open_mcp.return_value.__aenter__.return_value = client
+        # The mcp_server_fixture sets this environment variable.
+        mcp_server_url = os.environ["MCP_SERVER_URL"]
+        client = Client(mcp_server_url.replace("/mcp", "")) # Client needs the base URL
+        mock_open_mcp.return_value.__aenter__.return_value = client
 
-            # --- Run the agent ---
-            prompt = "Create a new Next.js application called my-app."
-            thread_id = f"smoke-test-{uuid.uuid4()}"
-            logger.info(f"Running agent with prompt: '{prompt}'")
-            final_state = await agent_graph_fixture.ainvoke(
-                {"messages": [HumanMessage(content=prompt)]},
-                config={"configurable": {"thread_id": thread_id}}
-            )
+        # Build the agent graph with the specific tools needed for this test.
+        # The agent_graph_fixture is a factory that we must call, and then compile the result.
+        tools = [template_init, run_shell]
+        agent_graph = agent_graph_fixture(tools=tools).compile()
+
+        # --- Run the agent ---
+        prompt = "Create a new Next.js application called my-app."
+        thread_id = f"smoke-test-{uuid.uuid4()}"
+        logger.info(f"Running agent with prompt: '{prompt}'")
+        final_state = await agent_graph.ainvoke(
+            {"messages": [HumanMessage(content=prompt)]},
+            config={"configurable": {"thread_id": thread_id}}
+        )
 
     # --- Assertions ---
     logger.info("--- Verifying Assertions ---")
@@ -58,6 +66,7 @@ async def test_scaffolding_smoke_test(agent_graph_fixture, monkeypatch, tmp_path
     # 1. Verify the agent completed without error
     assert final_state is not None, "Agent run did not complete."
     final_messages = final_state.get("messages", [])
+    assert final_messages, "Agent run completed with no messages."
     last_message = final_messages[-1]
     assert "error" not in last_message.content.lower(), f"Agent run ended with an error: {last_message.content}"
 
